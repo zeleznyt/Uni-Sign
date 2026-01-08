@@ -42,6 +42,7 @@ class Graph:
     def get_edge(self, layout):
         # 'body', 'left', 'right', 'mouth', 'face'
         # if layout == 'custom_hand21':
+
         if layout == 'left' or layout == 'right':
             self.num_node = 21
             self_link = [(i, i) for i in range(self.num_node)]
@@ -87,6 +88,7 @@ class Graph:
             neighbor_link = neighbor_1base
             self.edge = self_link + neighbor_link
             self.center = 0
+
         elif layout == 'face_all':
             self.num_node = 9 + 8 + 1
             self_link = [(i, i) for i in range(self.num_node)]
@@ -94,6 +96,111 @@ class Graph:
                              [[i, i + 1] for i in range(9, 9 + 8 - 1)] + \
                              [[9 + 8 - 1, 9]] + \
                              [[17, i] for i in range(17)]
+            neighbor_link = neighbor_1base
+            self.edge = self_link + neighbor_link
+            self.center = self.num_node - 1
+
+        elif layout == 'ytasl_left' or layout == 'ytasl_right':
+            self.num_node = 21
+            self_link = [(i, i) for i in range(self.num_node)]
+            neighbor_1base = [
+                [3, 4],
+                [0, 5],
+                [17, 18],
+                [0, 17],
+                [13, 14],
+                [13, 17],
+                [18, 19],
+                [5, 6],
+                [5, 9],
+                [14, 15],
+                [0, 1],
+                [9, 10],
+                [1, 2],
+                [9, 13],
+                [10, 11],
+                [19, 20],
+                [6, 7],
+                [15, 16],
+                [2, 3],
+                [11, 12],
+                [7, 8]
+            ]
+            neighbor_link = neighbor_1base
+            self.edge = self_link + neighbor_link
+            self.center = 0
+
+        elif layout == 'ytasl_body':
+            self.num_node = 25
+            self_link = [(i, i) for i in range(self.num_node)]
+            neighbor_1base = [
+                [15, 21],
+                [16, 20],
+                [18, 20],
+                [3, 7],
+                [14, 16],
+                [11, 23],
+                [6, 8],
+                [15, 17],
+                [16, 22],
+                [4, 5],
+                [5, 6],
+                [12, 24],
+                [23, 24],
+                [0, 1],
+                [9, 10],
+                [1, 2],
+                [0, 4],
+                [11, 13],
+                [15, 19],
+                [16, 18],
+                [12, 14],
+                [17, 19],
+                [2, 3],
+                [11, 12],
+                [13, 15]
+            ]
+            neighbor_link = neighbor_1base
+            self.edge = self_link + neighbor_link
+            self.center = 0
+
+        elif layout == 'ytasl_face_all':
+            self.num_node = 37
+            self_link = [(i, i) for i in range(self.num_node)]
+            neighbor_1base = [
+                [16, 18],
+                [18, 13],
+                [13, 7],
+                [7, 8],
+                [8, 15],
+                [15, 24],
+                [24, 23],
+                [23, 29],
+                [29, 32],
+                [32, 16],
+                [5, 17],
+                [17, 14],
+                [30, 31],
+                [31, 21],
+                [11, 1],
+                [1, 27],
+                [10, 6],
+                [6, 0],
+                [0, 22],
+                [22, 26],
+                [26, 34],
+                [34, 4],
+                [4, 20],
+                [20, 10],
+                [10, 12],
+                [12, 2],
+                [2, 28],
+                [28, 26],
+                [10, 19],
+                [19, 3],
+                [3, 33],
+                [33, 26]
+            ]
             neighbor_link = neighbor_1base
             self.edge = self_link + neighbor_link
             self.center = self.num_node - 1

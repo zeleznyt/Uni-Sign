@@ -238,6 +238,8 @@ def save_on_master(*args, **kwargs):
         print("save ckpt finish")
 
 def init_distributed_mode(args):
+    if "LOCAL_RANK" not in os.environ:
+        os.environ["LOCAL_RANK"] = str(args.local_rank)
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
@@ -262,6 +264,8 @@ def init_distributed_mode(args):
     setup_for_distributed(args.rank == 0)
 
 def init_distributed_mode_ds(args):
+    if "LOCAL_RANK" not in os.environ:
+        os.environ["LOCAL_RANK"] = str(args.local_rank)
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
@@ -523,15 +527,12 @@ def get_args_parser():
     parser.add_argument("--max_length", default=256, type=int)
     
     # select dataset
-    parser.add_argument("--dataset", default="CSL_Daily", choices=['CSL_News', "CSL_Daily", "WLASL"])
-    
+    parser.add_argument("--dataset", default="CSL_Daily", choices=['CSL_News', "CSL_Daily", "WLASL", "Isharah", "YTASL"])
+
     # select task
     parser.add_argument("--task", default="SLT", choices=['SLT', "ISLR", "CSLR"])
-    
+
     # select label smooth
     parser.add_argument("--label_smoothing", default=0.2, type=float)
-
-    # online inference
-    parser.add_argument("--online_video", default="", type=str)
 
     return parser
