@@ -591,14 +591,17 @@ class S2T_Dataset_YTASL(Base_Dataset):
             self.clip_order_to_int[video_id] = dict(zip(co, range(len(co))))
 
         for video_id, clip_dict in self.annotation.items():
-            for clip_name in clip_dict:
-                if clip_name != "clip_order":
+            for clip_name in clip_dict['clip_order']:
+                if len([" ".join(_.split()) for _ in clip_dict[clip_name]['translation'].split(".") if len(_) > 0]) > 0:  # discard labels with no sentences
                     self.list_data.append((video_id, self.clip_order_to_int[video_id][clip_name]))
 
         video_clips = set()
         for clip in os.listdir(self.pose_dir):
             video_id, clip_id, _ = clip.split(".")
-            video_clips.add((video_id, self.clip_order_to_int[video_id][f'{video_id}.{clip_id}']))
+            if video_id in self.clip_order_to_int:
+                clip_full_id = f'{video_id}.{clip_id}'
+                if clip_full_id in self.clip_order_to_int[video_id]:
+                    video_clips.add((video_id, self.clip_order_to_int[video_id][clip_full_id]))
 
         self.remove_missing_annotation(video_clips)  # Remove data in annotations that are missing in h5 file
 
