@@ -99,7 +99,7 @@ class Uni_Sign(nn.Module):
 
         self.part_para = nn.Parameter(torch.zeros(hidden_dim*len(self.modes)))
         self.pose_proj = nn.Linear(256*4, 768)
-        
+
         self.apply(self._init_weights)
         
         if "CSL" in self.args.dataset:
@@ -139,6 +139,13 @@ class Uni_Sign(nn.Module):
 
         self.mt5_model = MT5ForConditionalGeneration.from_pretrained(mt5_path)
         self.mt5_tokenizer = T5Tokenizer.from_pretrained(mt5_path, legacy=False)
+
+        self.n_registers = 4
+        self.d_model = self.mt5_model.config.d_model  # should be 768
+        self.register_tokens = nn.Parameter(torch.zeros(self.n_registers, self.d_model))
+
+        # init like other embeddings
+        trunc_normal_(self.register_tokens, std=0.02)
     
         
     def _init_weights(self, m):
@@ -277,10 +284,33 @@ class Uni_Sign(nn.Module):
         prefix_embeds = self.mt5_model.encoder.embed_tokens(prefix_token['input_ids'])
         inputs_embeds = torch.cat([prefix_embeds, inputs_embeds], dim=1)
 
-        attention_mask = torch.cat([prefix_token['attention_mask'],
-                                    src_input['attention_mask']], dim=1)
+        B = inputs_embeds.size(0)
 
-        tgt_input_tokenizer = self.mt5_tokenizer(tgt_input['gt_sentence'], 
+        # expand registers for batch
+        register_embeds = self.register_tokens.unsqueeze(0).expand(B, -1, -1)
+        # shape: (B, 4, 768)
+
+        # prepend order: [prefix | registers | pose_tokens]
+        inputs_embeds = torch.cat([prefix_embeds, register_embeds, inputs_embeds], dim=1)
+
+        # attention_mask = torch.cat([prefix_token['attention_mask'],
+        #                             src_input['attention_mask']], dim=1)
+        register_mask = torch.ones(
+            (B, self.n_registers),
+            device=inputs_embeds.device,
+            dtype=prefix_token['attention_mask'].dtype
+        )
+
+        attention_mask = torch.cat(
+            [
+                prefix_token['attention_mask'],
+                register_mask,
+                src_input['attention_mask']
+            ],
+            dim=1
+        )
+
+        tgt_input_tokenizer = self.mt5_tokenizer(tgt_input['gt_sentence'],
                                                 return_tensors="pt", 
                                                 padding=True,
                                                 truncation=True,
