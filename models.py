@@ -282,7 +282,7 @@ class Uni_Sign(nn.Module):
                             ).to(inputs_embeds.device)
         
         prefix_embeds = self.mt5_model.encoder.embed_tokens(prefix_token['input_ids'])
-        inputs_embeds = torch.cat([prefix_embeds, inputs_embeds], dim=1)
+        # inputs_embeds = torch.cat([prefix_embeds, inputs_embeds], dim=1)
 
         B = inputs_embeds.size(0)
 
