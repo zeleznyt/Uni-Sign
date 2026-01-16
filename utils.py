@@ -525,7 +525,10 @@ def get_args_parser():
     
     # Pose length
     parser.add_argument("--max_length", default=256, type=int)
-    
+
+    # Normalize method
+    parser.add_argument("--normalization", default="none", choices=["none", "signspace"])
+
     # select dataset
     parser.add_argument("--dataset", default="CSL_Daily", choices=['CSL_News', "CSL_Daily", "WLASL", "Isharah", "YTASL"])
 

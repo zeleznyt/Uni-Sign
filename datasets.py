@@ -13,21 +13,73 @@ import json
 import pathlib
 from torchvision import transforms
 from config import rgb_dirs, pose_dirs
-from collections import defaultdict
+from normalization import (local_keypoint_normalization, global_keypoint_normalization)
 
 
-def load_part_kp_YTASL(skeletons, confs):
+def all_same(keypoints):
+    return np.sum(keypoints == keypoints[0, 0]) == keypoints.size
+
+
+def sign_space_normalization(raw_keypoints, missing_values=None):
+    local_landmarks = {}
+    global_landmarks = {}
+    kp_normalization = ('global-body', 'local-right', 'local-left', 'local-face_all')
+    part_order = [i.removeprefix('local-').removeprefix('global-') for i in kp_normalization]
+    part_order = {k: v for v, k in enumerate(part_order)}
+
+    for idx, landmarks in enumerate(kp_normalization):
+        prefix, landmarks = landmarks.split("-")
+        if prefix == "local":
+            local_landmarks[idx] = landmarks
+        elif prefix == "global":
+            global_landmarks[idx] = landmarks
+
+    # local normalization
+    for idx, landmarks in local_landmarks.items():
+        normalized_keypoints = local_keypoint_normalization(raw_keypoints, landmarks, padding=0.2)
+        local_landmarks[idx] = normalized_keypoints
+
+    # global normalization
+    additional_landmarks = list(global_landmarks.values())
+    if "body" in additional_landmarks:
+        additional_landmarks.remove("body")
+
+    keypoints, additional_keypoints = global_keypoint_normalization(
+        raw_keypoints,
+        "body",
+        additional_landmarks
+    )
+
+    for k, landmark in global_landmarks.items():
+        if landmark == "body":
+            global_landmarks[k] = keypoints
+        else:
+            global_landmarks[k] = additional_keypoints[landmark]
+
+    all_landmarks = {**local_landmarks, **global_landmarks}
+    all_landmarks_per_part = {k: all_landmarks[v] for k, v in part_order.items()}
+
+    if missing_values is not None:
+        for part, data in all_landmarks_per_part.items():
+            for fidx in range(len(data)):
+                if not all_same(data[fidx]):
+                    continue
+                all_landmarks_per_part[part][fidx] = np.zeros_like(data[fidx]) + missing_values
+
+    return all_landmarks_per_part
+
+
+def load_part_kp_YTASL(skeletons, confs, normalization):
     thr = 0.3
-    kps_with_scores = {}
+    # kps_with_scores = {}
+    kps_all_parts = {}
+    confs_all_parts = {}
     scale = None
 
     for part in ['body', 'left', 'right', 'face_all']:
         kps = []
         confidences = []
         for i, (skeleton, conf) in enumerate(zip(skeletons, confs)):
-            # if skeleton.ndim == 4:  # if (1,133,2) - wrapped in list
-            #     skeleton = skeleton[0]
-            #     conf = conf[0]
 
             if part == 'body':
                 hand_kp2d = np.stack(skeleton['pose_landmarks'][:25])
@@ -35,30 +87,20 @@ def load_part_kp_YTASL(skeletons, confs):
             elif part == 'left':
                 hand_kp2d = np.stack(skeleton['left_hand_landmarks'])
                 confidence = np.stack(conf['left_hand_landmarks'])
-                # hand_kp2d = skeleton[91:112, :]
-                # hand_kp2d = hand_kp2d - hand_kp2d[0, :]
-                # confidence = conf[91:112]
+
             elif part == 'right':
                 hand_kp2d = np.stack(skeleton['right_hand_landmarks'])
                 confidence = np.stack(conf['right_hand_landmarks'])
-                # hand_kp2d = skeleton[112:133, :]
-                # hand_kp2d = hand_kp2d - hand_kp2d[0, :]
-                # confidence = conf[112:133]
+
             elif part == 'face_all':
                 face_landmarks = [
                     0, 4, 13, 14, 17, 33, 39, 46, 52, 55, 61, 64, 81,
                     93, 133, 151, 152, 159, 172, 178, 181, 263, 269, 276,
                     282, 285, 291, 294, 311, 323, 362, 386, 397, 402, 405, 468, 473
                 ]
-
                 hand_kp2d = np.stack([skeleton['face_landmarks'][i] for i in face_landmarks])
                 confidence = np.stack([conf['face_landmarks'][i] for i in face_landmarks])
 
-                # hand_kp2d = skeleton[
-                #     [i for i in list(range(23, 23 + 17))[::2]] + [i for i in range(83, 83 + 8)] + [53], :]
-                # hand_kp2d = hand_kp2d - hand_kp2d[-1, :]
-                # confidence = conf[
-                #     [i for i in list(range(23, 23 + 17))[::2]] + [i for i in range(83, 83 + 8)] + [53]]
             else:
                 raise NotImplementedError
             kps.append(hand_kp2d)
@@ -67,9 +109,19 @@ def load_part_kp_YTASL(skeletons, confs):
         kps = np.stack(kps, axis=0)
         confidences = np.stack(confidences, axis=0)
 
-        result = np.concatenate([kps, confidences[..., None]], axis=-1)
-        kps_with_scores[part] = torch.tensor(result, dtype=torch.float32)
+        kps_all_parts[part] = kps
+        confs_all_parts[part] = confidences[..., None]
 
+    if normalization == 'signspace':
+        normalized_kps = sign_space_normalization(kps_all_parts.copy())
+    else:
+        normalized_kps = kps_all_parts
+
+    kps_with_scores = {}
+    for part in normalized_kps.keys():
+        kps_with_scores[part] = np.concatenate([normalized_kps[part], confs_all_parts[part]], axis=-1)
+
+    kps_with_scores = {k: torch.as_tensor(v, dtype=torch.float32) for k, v in kps_with_scores.items()}
     return kps_with_scores
 
 # load sub-pose
@@ -577,6 +629,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
         self.phase = phase
         self.annotation = load_json(path)
         self.rgb_support = self.args.rgb_support
+        self.normalization = self.args.normalization
 
         self.pose_dir = pose_dirs[args.dataset]
         self.rgb_dir = rgb_dirs[args.dataset]
@@ -704,7 +757,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
 
             confs.append(conf)
 
-        kps_with_scores = load_part_kp_YTASL(skeletons, confs)
+        kps_with_scores = load_part_kp_YTASL(skeletons, confs, self.normalization)
         return kps_with_scores
 
     def __len__(self):
