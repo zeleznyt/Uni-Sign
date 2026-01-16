@@ -529,6 +529,9 @@ def get_args_parser():
     # Normalize method
     parser.add_argument("--normalization", default="none", choices=["none", "signspace"])
 
+    # Number of registers
+    parser.add_argument("--n_registers", default=0, type=int)
+
     # select dataset
     parser.add_argument("--dataset", default="CSL_Daily", choices=['CSL_News', "CSL_Daily", "WLASL", "Isharah", "YTASL"])
 

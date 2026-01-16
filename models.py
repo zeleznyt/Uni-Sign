@@ -140,7 +140,7 @@ class Uni_Sign(nn.Module):
         self.mt5_model = MT5ForConditionalGeneration.from_pretrained(mt5_path)
         self.mt5_tokenizer = T5Tokenizer.from_pretrained(mt5_path, legacy=False)
 
-        self.n_registers = 4
+        self.n_registers = args.n_registers
         self.d_model = self.mt5_model.config.d_model  # should be 768
         self.register_tokens = nn.Parameter(torch.zeros(self.n_registers, self.d_model))
 
