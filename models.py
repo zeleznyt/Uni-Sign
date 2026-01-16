@@ -282,7 +282,6 @@ class Uni_Sign(nn.Module):
                             ).to(inputs_embeds.device)
         
         prefix_embeds = self.mt5_model.encoder.embed_tokens(prefix_token['input_ids'])
-        # inputs_embeds = torch.cat([prefix_embeds, inputs_embeds], dim=1)
 
         B = inputs_embeds.size(0)
 
@@ -291,24 +290,13 @@ class Uni_Sign(nn.Module):
         # shape: (B, 4, 768)
 
         # prepend order: [prefix | registers | pose_tokens]
-        inputs_embeds = torch.cat([prefix_embeds, register_embeds, inputs_embeds], dim=1)
+        inputs_embeds = torch.cat([prefix_embeds, inputs_embeds, register_embeds], dim=1)
 
-        # attention_mask = torch.cat([prefix_token['attention_mask'],
-        #                             src_input['attention_mask']], dim=1)
-        register_mask = torch.ones(
-            (B, self.n_registers),
-            device=inputs_embeds.device,
-            dtype=prefix_token['attention_mask'].dtype
-        )
+        register_mask = torch.ones((B, self.n_registers),
+                                   device=inputs_embeds.device,dtype=prefix_token['attention_mask'].dtype)
 
-        attention_mask = torch.cat(
-            [
-                prefix_token['attention_mask'],
-                register_mask,
-                src_input['attention_mask']
-            ],
-            dim=1
-        )
+        attention_mask = torch.cat([prefix_token['attention_mask'],
+                                    src_input['attention_mask'], register_mask], dim=1)
 
         tgt_input_tokenizer = self.mt5_tokenizer(tgt_input['gt_sentence'],
                                                 return_tensors="pt", 
