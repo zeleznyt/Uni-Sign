@@ -725,7 +725,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
             conf = {}
             if len(skeleton['pose_landmarks']) == 0:
                 conf['pose_landmarks'] = [0] * 33
-                skeleton['pose_landmarks'] = [[0, 0]] * 33
+                skeleton['pose_landmarks'] = [[0.0, 0.0]] * 33
             elif len(skeleton['pose_landmarks']) != 33:
                 raise NotImplementedError(f"Unexpected number of keypoints in a pose group: {clip_name}, {i}")
             else:
@@ -733,7 +733,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
 
             if len(skeleton['right_hand_landmarks']) == 0:
                 conf['right_hand_landmarks'] = [0] * 21
-                skeleton['right_hand_landmarks'] = [[0, 0]] * 21
+                skeleton['right_hand_landmarks'] = [[0.0, 0.0]] * 21
             elif len(skeleton['right_hand_landmarks']) != 21:
                 raise NotImplementedError(f"Unexpected number of keypoints in a Rhand group: {clip_name}, {i}")
             else:
@@ -741,7 +741,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
 
             if len(skeleton['left_hand_landmarks']) == 0:
                 conf['left_hand_landmarks'] = [0] * 21
-                skeleton['left_hand_landmarks'] = [[0, 0]] * 21
+                skeleton['left_hand_landmarks'] = [[0.0, 0.0]] * 21
             elif len(skeleton['left_hand_landmarks']) != 21:
                 raise NotImplementedError(f"Unexpected number of keypoints in a Lhand group: {clip_name}, {i}")
             else:
@@ -749,7 +749,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
 
             if len(skeleton['face_landmarks']) == 0:
                 conf['face_landmarks'] = [0] * 478
-                skeleton['face_landmarks'] = [[0, 0]] * 478
+                skeleton['face_landmarks'] = [[0.0, 0.0]] * 478
             elif len(skeleton['face_landmarks']) != 478:
                 raise NotImplementedError(f"Unexpected number of keypoints in a face group: {clip_name}, {i}")
             else:
