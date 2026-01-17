@@ -16,6 +16,7 @@ from models import get_requires_grad_dict
 from SLRT_metrics import translation_performance, islr_performance, wer_list
 from transformers import get_scheduler
 from config import *
+import wandb
 
 import torch.distributed as dist
 
@@ -30,6 +31,15 @@ def main(args):
 
     print(args)
     utils.set_seed(args.seed)
+
+    # Only main process logs to wandb
+    if utils.is_main_process():
+        wandb.init(
+            project=os.environ.get("WANDB_PROJECT", "default_project"),
+            entity=os.environ.get("WANDB_ENTITY", None),
+            config=vars(args),
+            name=f"{args.dataset}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
 
     print(f"Creating dataset:")
 
@@ -191,12 +201,12 @@ def main(args):
 
         # single gpu inference
         if utils.is_main_process():
-            test_stats = evaluate(args, dev_dataloader, model, model_without_ddp, phase='dev')
+            dev_stats = evaluate(args, dev_dataloader, model, model_without_ddp, phase='dev')
             evaluate(args, test_dataloader, model, model_without_ddp, phase='test')
 
             if args.task == "SLT":
-                if max_accuracy < test_stats["bleu4"]:
-                    max_accuracy = test_stats["bleu4"]
+                if max_accuracy < dev_stats["bleu4"]:
+                    max_accuracy = dev_stats["bleu4"]
                     if args.output_dir and utils.is_main_process():
                         checkpoint_paths = [output_dir / 'best_checkpoint.pth']
                         for checkpoint_path in checkpoint_paths:
@@ -204,12 +214,12 @@ def main(args):
                                 'model': get_requires_grad_dict(model_without_ddp),
                             }, checkpoint_path)
 
-                print(f"BLEU-4 of the network on the {len(dev_dataloader)} dev videos: {test_stats['bleu4']:.2f}")
+                print(f"BLEU-4 of the network on the {len(dev_dataloader)} dev videos: {dev_stats['bleu4']:.2f}")
                 print(f'Max BLEU-4: {max_accuracy:.2f}%')
 
             elif args.task == "ISLR":
-                if max_accuracy < test_stats["top1_acc_pi"]:
-                    max_accuracy = test_stats["top1_acc_pi"]
+                if max_accuracy < dev_stats["top1_acc_pi"]:
+                    max_accuracy = dev_stats["top1_acc_pi"]
                     if args.output_dir and utils.is_main_process():
                         checkpoint_paths = [output_dir / 'best_checkpoint.pth']
                         for checkpoint_path in checkpoint_paths:
@@ -218,12 +228,12 @@ def main(args):
                             }, checkpoint_path)
 
                 print(
-                    f"PI accuracy of the network on the {len(dev_dataloader)} dev videos: {test_stats['top1_acc_pi']:.2f}")
+                    f"PI accuracy of the network on the {len(dev_dataloader)} dev videos: {dev_stats['top1_acc_pi']:.2f}")
                 print(f'Max PI accuracy: {max_accuracy:.2f}%')
 
             elif args.task == "CSLR":
-                if max_accuracy > test_stats["wer"]:
-                    max_accuracy = test_stats["wer"]
+                if max_accuracy > dev_stats["wer"]:
+                    max_accuracy = dev_stats["wer"]
                     if args.output_dir and utils.is_main_process():
                         checkpoint_paths = [output_dir / 'best_checkpoint.pth']
                         for checkpoint_path in checkpoint_paths:
@@ -231,13 +241,15 @@ def main(args):
                                 'model': get_requires_grad_dict(model_without_ddp),
                             }, checkpoint_path)
 
-                print(f"WER of the network on the {len(dev_dataloader)} dev videos: {test_stats['wer']:.2f}")
+                print(f"WER of the network on the {len(dev_dataloader)} dev videos: {dev_stats['wer']:.2f}")
                 print(f'Min WER: {max_accuracy:.2f}%')
 
-            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                         **{f'test_{k}': v for k, v in test_stats.items()},
+            log_stats = {**{f'train/{k}': v for k, v in train_stats.items()},
+                         **{f'dev/{k}': v for k, v in dev_stats.items()},
                          'epoch': epoch,
                          'n_parameters': n_parameters}
+            if utils.is_main_process():
+                wandb.log(log_stats, step=epoch*len(train_dataloader))
 
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
@@ -282,6 +294,12 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
 
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+
+        if utils.is_main_process():
+            wandb.log({
+                'train/loss': loss_value,
+                'train/learning_rate': optimizer.param_groups[0]["lr"]
+            }, step=epoch * len(data_loader) + step)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
