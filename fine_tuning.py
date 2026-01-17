@@ -294,12 +294,12 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
 
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-
-        if utils.is_main_process():
-            wandb.log({
-                'train/loss': loss_value,
-                'train/learning_rate': optimizer.param_groups[0]["lr"]
-            }, step=epoch * len(data_loader) + step)
+        #
+        # if utils.is_main_process():
+        #     wandb.log({
+        #         'train/loss': loss_value,
+        #         'train/learning_rate': optimizer.param_groups[0]["lr"]
+        #     }, step=epoch * len(data_loader) + step)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
