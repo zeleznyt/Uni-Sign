@@ -33,7 +33,7 @@ def main(args):
     utils.set_seed(args.seed)
 
     # Only main process logs to wandb
-    if utils.is_main_process():
+    if utils.is_main_process() and args.wandb:
         wandb.init(
             project=os.environ.get("WANDB_PROJECT", "default_project"),
             entity=os.environ.get("WANDB_ENTITY", None),
@@ -248,7 +248,7 @@ def main(args):
                          **{f'dev/{k}': v for k, v in dev_stats.items()},
                          'epoch': epoch,
                          'n_parameters': n_parameters}
-            if utils.is_main_process():
+            if utils.is_main_process() and args.wandb:
                 wandb.log(log_stats, step=epoch*len(train_dataloader))
 
         if args.output_dir and utils.is_main_process():
@@ -258,6 +258,9 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+
+    if utils.is_main_process() and args.wandb:
+        wandb.finish()
 
 
 def train_one_epoch(args, model, data_loader, optimizer, epoch):
@@ -294,12 +297,12 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
 
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-        #
-        # if utils.is_main_process():
-        #     wandb.log({
-        #         'train/loss': loss_value,
-        #         'train/learning_rate': optimizer.param_groups[0]["lr"]
-        #     }, step=epoch * len(data_loader) + step)
+
+        if utils.is_main_process() and args.wandb and model.global_steps % args.log_step == 0:
+            wandb.log({
+                'train/loss': loss_value,
+                'train/learning_rate': optimizer.param_groups[0]["lr"]
+            }, step=epoch * len(data_loader) + step)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()

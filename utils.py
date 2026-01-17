@@ -37,11 +37,6 @@ import torch.backends.cudnn as cudnn
 import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 
-try:
-    import wandb
-except ImportError:
-    wandb = None
-
 
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
@@ -179,18 +174,6 @@ class MetricLogger(object):
                         i, len(iterable), eta=eta_string,
                         meters=str(self),
                         time=str(iter_time), data=str(data_time)))
-
-                if wandb is not None and is_main_process():
-                    log_dict = {
-                        f"train/{name}": meter.global_avg
-                        for name, meter in self.meters.items()
-                    }
-                    log_dict.update({
-                        "train/iter_time": iter_time.global_avg,
-                        "train/data_time": data_time.global_avg,
-                        "train/memory_MB": torch.cuda.max_memory_allocated() / MB
-                    })
-                    wandb.log(log_dict)
 
             i += 1
             end = time.time()
@@ -558,5 +541,9 @@ def get_args_parser():
 
     # select label smooth
     parser.add_argument("--label_smoothing", default=0.2, type=float)
+
+    # Logging
+    parser.add_argument('--wandb', action='store_true',)
+    parser.add_argument("--log_step", default=100, type=int)
 
     return parser
