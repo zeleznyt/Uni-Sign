@@ -249,7 +249,7 @@ def main(args):
                          'epoch': epoch,
                          'n_parameters': n_parameters}
             if utils.is_main_process() and args.wandb:
-                wandb.log(log_stats, step=epoch*len(train_dataloader))
+                wandb.log(log_stats, step=(epoch +1 ) * len(train_dataloader))
 
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
