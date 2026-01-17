@@ -251,7 +251,7 @@ def main(args):
                          'epoch': epoch,
                          'n_parameters': n_parameters}
             epoch_elapsed = time.time() - epoch_start_time
-            log_stats['train/iter_time'] = epoch_elapsed
+            log_stats['train/epoch_elapsed_sec'] = epoch_elapsed
             if args.wandb:
                 wandb.log(log_stats, step=(epoch +1 ) * len(train_dataloader))
 
