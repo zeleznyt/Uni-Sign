@@ -202,7 +202,7 @@ def main(args):
         # single gpu inference
         if utils.is_main_process():
             dev_stats = evaluate(args, dev_dataloader, model, model_without_ddp, phase='dev')
-            evaluate(args, test_dataloader, model, model_without_ddp, phase='test')
+            # evaluate(args, test_dataloader, model, model_without_ddp, phase='test')
 
             if args.task == "SLT":
                 if max_accuracy < dev_stats["bleu4"]:
