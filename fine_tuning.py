@@ -298,7 +298,7 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
-        if utils.is_main_process() and args.wandb and model.global_steps % args.log_step == 0:
+        if utils.is_main_process() and args.wandb and (epoch * len(data_loader) + step) % args.log_step == 0:
             wandb.log({
                 'train/loss': loss_value,
                 'train/learning_rate': optimizer.param_groups[0]["lr"]
