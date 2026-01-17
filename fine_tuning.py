@@ -187,6 +187,8 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
 
     for epoch in range(0, args.epochs):
+        epoch_start_time = time.time()
+
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
@@ -248,7 +250,9 @@ def main(args):
                          **{f'dev/{k}': v for k, v in dev_stats.items()},
                          'epoch': epoch,
                          'n_parameters': n_parameters}
-            if utils.is_main_process() and args.wandb:
+            epoch_elapsed = time.time() - epoch_start_time
+            log_stats['train/iter_time'] = epoch_elapsed
+            if args.wandb:
                 wandb.log(log_stats, step=(epoch +1 ) * len(train_dataloader))
 
         if args.output_dir and utils.is_main_process():
@@ -277,6 +281,7 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
         target_dtype = torch.bfloat16
 
     for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+        start_time = time.time()
         if target_dtype != None:
             for key in src_input.keys():
                 if isinstance(src_input[key], torch.Tensor):
@@ -298,13 +303,16 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
-        if utils.is_main_process() and args.wandb and (epoch * len(data_loader) + step) % args.log_step == 0:
+        global_step = epoch * len(data_loader) + step
+        if utils.is_main_process() and args.wandb and global_step % args.log_step == 0:
+            elapsed_time = time.time() - start_time
             log_dict = {
                 f"train/{name}": meter.global_avg
                 for name, meter in metric_logger.meters.items()
             }
             log_dict['train/loss_raw'] = loss_value
-            wandb.log(log_dict, step=epoch * len(data_loader) + step)
+            log_dict['train/iter_time'] = elapsed_time
+            wandb.log(log_dict, step=global_step)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
