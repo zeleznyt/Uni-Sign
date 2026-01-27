@@ -143,6 +143,7 @@ class Uni_Sign(nn.Module):
         self.n_registers = args.n_registers
         self.d_model = self.mt5_model.config.d_model  # should be 768
         self.register_tokens = nn.Parameter(torch.zeros(self.n_registers, self.d_model))
+        self.register_position = args.register_position
 
         # init like other embeddings
         trunc_normal_(self.register_tokens, std=0.02)
@@ -283,20 +284,67 @@ class Uni_Sign(nn.Module):
         
         prefix_embeds = self.mt5_model.encoder.embed_tokens(prefix_token['input_ids'])
 
-        B = inputs_embeds.size(0)
+        if self.n_registers > 0:
+            B = inputs_embeds.size(0)
 
-        # expand registers for batch
-        register_embeds = self.register_tokens.unsqueeze(0).expand(B, -1, -1)
-        # shape: (B, 4, 768)
+            # expand registers for batch
+            register_embeds = self.register_tokens.unsqueeze(0).expand(B, -1, -1)
+            # shape: (B, 4, 768)
 
-        # prepend order: [prefix | registers | pose_tokens]
-        inputs_embeds = torch.cat([prefix_embeds, inputs_embeds, register_embeds], dim=1)
+            register_mask = torch.ones((B, self.n_registers), device=inputs_embeds.device,dtype=prefix_token['attention_mask'].dtype)
 
-        register_mask = torch.ones((B, self.n_registers),
-                                   device=inputs_embeds.device,dtype=prefix_token['attention_mask'].dtype)
+            if self.register_position == 'before_all':
+                # prepend order: [registers | prefix | pose_tokens]
+                inputs_embeds = torch.cat([register_embeds, prefix_embeds, inputs_embeds], dim=1)
+                attention_mask = torch.cat([register_mask, prefix_token['attention_mask'], src_input['attention_mask']], dim=1)
 
-        attention_mask = torch.cat([prefix_token['attention_mask'],
-                                    src_input['attention_mask'], register_mask], dim=1)
+            elif self.register_position == 'after_prefix' or self.register_position == 'before_pose':
+                # prepend order: [prefix | registers | pose_tokens]
+                inputs_embeds = torch.cat([prefix_embeds, register_embeds, inputs_embeds], dim=1)
+                attention_mask = torch.cat([prefix_token['attention_mask'], register_mask, src_input['attention_mask']], dim=1)
+
+            elif self.register_position == 'after_valid_pose':
+                # prepend order: [prefix | valid_pose_tokens | registers | padded_pose_tokens]
+                inputs_list = []
+                mask_list = []
+
+                for b in range(B):
+                    valid_len = int(src_input['attention_mask'][b].sum().item())
+
+                    pose_valid = inputs_embeds[b, :valid_len]
+                    pose_pad = inputs_embeds[b, valid_len:]
+
+                    emb = torch.cat(
+                        [prefix_embeds[b],
+                         pose_valid,
+                         register_embeds[b],
+                         pose_pad],
+                        dim=0
+                    )
+
+                    m = torch.cat(
+                        [prefix_token['attention_mask'][b],
+                         src_input['attention_mask'][b, :valid_len],
+                         register_mask[b],
+                         src_input['attention_mask'][b, valid_len:]],
+                        dim=0
+                    )
+
+                    inputs_list.append(emb)
+                    mask_list.append(m)
+
+                inputs_embeds = torch.stack(inputs_list, dim=0)
+                attention_mask = torch.stack(mask_list, dim=0)
+
+            elif self.register_position == 'after_all':
+                # prepend order: [prefix | pose_tokens | registers]
+                inputs_embeds = torch.cat([prefix_embeds, inputs_embeds, register_embeds], dim=1)
+                attention_mask = torch.cat([prefix_token['attention_mask'], src_input['attention_mask'], register_mask], dim=1)
+
+        else:
+            # prepend order: [prefix | pose_tokens]
+            inputs_embeds = torch.cat([prefix_embeds, inputs_embeds], dim=1)
+            attention_mask = torch.cat([prefix_token['attention_mask'], src_input['attention_mask']], dim=1)
 
         tgt_input_tokenizer = self.mt5_tokenizer(tgt_input['gt_sentence'],
                                                 return_tensors="pt", 

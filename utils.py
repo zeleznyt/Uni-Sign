@@ -532,6 +532,15 @@ def get_args_parser():
 
     # Number of registers
     parser.add_argument("--n_registers", default=0, type=int)
+    register_position_choices = [
+      "before_all",
+      "after_prefix",
+      "before_pose",          # same as after_prefix (semantic alias)
+      "after_valid_pose",     # before padding
+      "after_all"             # after padding
+    ]
+    parser.add_argument("--register_position", default="before_all", choices=register_position_choices)
+
 
     # select dataset
     parser.add_argument("--dataset", default="CSL_Daily", choices=['CSL_News', "CSL_Daily", "WLASL", "Isharah", "YTASL"])
