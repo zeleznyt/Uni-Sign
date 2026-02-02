@@ -541,6 +541,8 @@ def get_args_parser():
     ]
     parser.add_argument("--register_position", default="before_all", choices=register_position_choices)
 
+    # Adaptive GCN
+    parser.add_argument("--no_adaptive_gcn", action='store_true',)
 
     # select dataset
     parser.add_argument("--dataset", default="CSL_Daily", choices=['CSL_News', "CSL_Daily", "WLASL", "Isharah", "YTASL"])

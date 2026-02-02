@@ -90,8 +90,8 @@ class Uni_Sign(nn.Module):
         self.fusion_gcn_modules = nn.ModuleDict()
         spatial_kernel_size = A[0].size(0)
         for index, mode in enumerate(self.modes):
-            self.gcn_modules[mode], final_dim = get_stgcn_chain(64, 'spatial', (1, spatial_kernel_size), A[index].clone(), True)
-            self.fusion_gcn_modules[mode], _ = get_stgcn_chain(final_dim, 'temporal', (5, spatial_kernel_size), A[index].clone(), True)
+            self.gcn_modules[mode], final_dim = get_stgcn_chain(64, 'spatial', (1, spatial_kernel_size), A[index].clone(), adaptive=not self.args.no_adaptive_gcn)
+            self.fusion_gcn_modules[mode], _ = get_stgcn_chain(final_dim, 'temporal', (5, spatial_kernel_size), A[index].clone(), adaptive=not self.args.no_adaptive_gcn)
 
         self.gcn_modules['left'] = self.gcn_modules['right']
         self.fusion_gcn_modules['left'] = self.fusion_gcn_modules['right']
