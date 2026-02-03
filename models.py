@@ -81,7 +81,7 @@ class Uni_Sign(nn.Module):
         hidden_dim = args.hidden_dim
         self.proj_linear = nn.ModuleDict()
         for mode in self.modes:
-            graph_layout = f'ytasl_{mode}' if "YTASL" in self.args.dataset else f'{mode}'
+            graph_layout = f'{args.layout}_ytasl_{mode}' if "YTASL" in self.args.dataset else f'{args.layout}_{mode}'
             self.graph[mode] = Graph(layout=graph_layout, strategy='distance', max_hop=1)
             A.append(torch.tensor(self.graph[mode].A, dtype=torch.float32, requires_grad=False))
             self.proj_linear[mode] = nn.Linear(3, 64)

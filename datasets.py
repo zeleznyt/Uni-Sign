@@ -69,12 +69,15 @@ def sign_space_normalization(raw_keypoints, missing_values=None):
     return all_landmarks_per_part
 
 
-def load_part_kp_YTASL(skeletons, confs, normalization):
+def load_part_kp_YTASL(skeletons, confs, normalization, layout):
     thr = 0.3
     # kps_with_scores = {}
     kps_all_parts = {}
     confs_all_parts = {}
     scale = None
+
+    import matplotlib.pyplot as plt
+    import numpy as np
 
     for part in ['body', 'left', 'right', 'face_all']:
         kps = []
@@ -82,24 +85,44 @@ def load_part_kp_YTASL(skeletons, confs, normalization):
         for i, (skeleton, conf) in enumerate(zip(skeletons, confs)):
 
             if part == 'body':
-                hand_kp2d = np.stack(skeleton['pose_landmarks'][:25])
-                confidence = np.stack(conf['pose_landmarks'][:25])
+                if layout == 'default':
+                    hand_kp2d = np.stack(skeleton['pose_landmarks'][:25])
+                    confidence = np.stack(conf['pose_landmarks'][:25])
+                elif layout == 'pruned':
+                    pose_landmarks = [0, 7, 8, 11, 12, 13, 14, 15, 16]
+                    hand_kp2d = np.stack([skeleton['pose_landmarks'][i] for i in pose_landmarks])
+                    confidence = np.stack([conf['pose_landmarks'][i] for i in pose_landmarks])
+                elif layout == 'isharah':
+                    pass # TODO
             elif part == 'left':
-                hand_kp2d = np.stack(skeleton['left_hand_landmarks'])
-                confidence = np.stack(conf['left_hand_landmarks'])
+                if layout in ['default', 'pruned']:
+                    hand_kp2d = np.stack(skeleton['left_hand_landmarks'])
+                    confidence = np.stack(conf['left_hand_landmarks'])
+                elif layout == 'isharah':
+                    pass # TODO
 
             elif part == 'right':
-                hand_kp2d = np.stack(skeleton['right_hand_landmarks'])
-                confidence = np.stack(conf['right_hand_landmarks'])
+                if layout in ['default', 'pruned']:
+                    hand_kp2d = np.stack(skeleton['right_hand_landmarks'])
+                    confidence = np.stack(conf['right_hand_landmarks'])
+                elif layout == 'isharah':
+                    pass # TODO
 
             elif part == 'face_all':
-                face_landmarks = [
-                    0, 4, 13, 14, 17, 33, 39, 46, 52, 55, 61, 64, 81,
-                    93, 133, 151, 152, 159, 172, 178, 181, 263, 269, 276,
-                    282, 285, 291, 294, 311, 323, 362, 386, 397, 402, 405, 468, 473
-                ]
-                hand_kp2d = np.stack([skeleton['face_landmarks'][i] for i in face_landmarks])
-                confidence = np.stack([conf['face_landmarks'][i] for i in face_landmarks])
+                if layout == 'default':
+                    face_landmarks = [
+                        0, 4, 13, 14, 17, 33, 39, 46, 52, 55, 61, 64, 81,
+                        93, 133, 151, 152, 159, 172, 178, 181, 263, 269, 276,
+                        282, 285, 291, 294, 311, 323, 362, 386, 397, 402, 405, 468, 473
+                    ]
+                    hand_kp2d = np.stack([skeleton['face_landmarks'][i] for i in face_landmarks])
+                    confidence = np.stack([conf['face_landmarks'][i] for i in face_landmarks])
+                elif layout == 'pruned':
+                    face_landmarks = [4, 13, 14, 61, 81, 93, 152, 159, 172, 178, 291, 311, 323, 386, 397, 402, 472, 477]
+                    hand_kp2d = np.stack([skeleton['face_landmarks'][i] for i in face_landmarks])
+                    confidence = np.stack([conf['face_landmarks'][i] for i in face_landmarks])
+                elif layout == 'isharah':
+                    pass # TODO
 
             else:
                 raise NotImplementedError
@@ -630,6 +653,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
         self.annotation = load_json(path)
         self.rgb_support = self.args.rgb_support
         self.normalization = self.args.normalization
+        self.layout = args.layout
 
         self.pose_dir = pose_dirs[args.dataset]
         self.rgb_dir = rgb_dirs[args.dataset]
@@ -757,7 +781,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
 
             confs.append(conf)
 
-        kps_with_scores = load_part_kp_YTASL(skeletons, confs, self.normalization)
+        kps_with_scores = load_part_kp_YTASL(skeletons, confs, self.normalization, self.layout)
         return kps_with_scores
 
     def __len__(self):

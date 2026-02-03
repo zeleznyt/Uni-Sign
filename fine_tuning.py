@@ -59,34 +59,34 @@ def main(args):
                                   pin_memory=args.pin_mem,
                                   drop_last=True)
 
-    # metric_logger = utils.MetricLogger(delimiter="  ")
-    # metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    # header = 'Epoch: [{}/{}]'.format(1, args.epochs)
-    # print_freq = 10
-    #
-    # model = Uni_Sign(
-    #     args=args
-    # )
-    # model.cuda()
-    # # model.train()
-    # # for name, param in model.named_parameters():
-    # #     if param.requires_grad:
-    # #         param.data = param.data.to(torch.float32)
-    #
-    # for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(train_dataloader, print_freq, header)):
-    #     print(step)
-    #
-    #     if args.task == "CSLR":
-    #         tgt_input['gt_sentence'] = tgt_input['gt_gloss']
-    #
-    #     for key in src_input.keys():
-    #         if isinstance(src_input[key], torch.Tensor):
-    #             src_input[key] = src_input[key].cuda()
-    #             # src_input[key] = src_input[key].to(torch.bfloat16).cuda()
-    #
-    #     stack_out = model(src_input, tgt_input)
-    #     print(stack_out)
-    #     break
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    header = 'Epoch: [{}/{}]'.format(1, args.epochs)
+    print_freq = 10
+
+    model = Uni_Sign(
+        args=args
+    )
+    model.cuda()
+    # model.train()
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         param.data = param.data.to(torch.float32)
+
+    for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(train_dataloader, print_freq, header)):
+        print(step)
+
+        if args.task == "CSLR":
+            tgt_input['gt_sentence'] = tgt_input['gt_gloss']
+
+        for key in src_input.keys():
+            if isinstance(src_input[key], torch.Tensor):
+                src_input[key] = src_input[key].cuda()
+                # src_input[key] = src_input[key].to(torch.bfloat16).cuda()
+
+        stack_out = model(src_input, tgt_input)
+        print(stack_out)
+        break
 
 
 

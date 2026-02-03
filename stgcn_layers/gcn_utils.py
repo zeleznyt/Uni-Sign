@@ -43,7 +43,7 @@ class Graph:
         # 'body', 'left', 'right', 'mouth', 'face'
         # if layout == 'custom_hand21':
 
-        if layout == 'left' or layout == 'right':
+        if layout == 'default_left' or layout == 'default_right':
             self.num_node = 21
             self_link = [(i, i) for i in range(self.num_node)]
             neighbor_1base = [
@@ -72,7 +72,7 @@ class Graph:
             self.edge = self_link + neighbor_link
             self.center = 0
         
-        elif layout == 'body':
+        elif layout == 'default_body':
             self.num_node = 9
             self_link = [(i, i) for i in range(self.num_node)]
             neighbor_1base = [
@@ -89,7 +89,7 @@ class Graph:
             self.edge = self_link + neighbor_link
             self.center = 0
 
-        elif layout == 'face_all':
+        elif layout == 'default_face_all':
             self.num_node = 9 + 8 + 1
             self_link = [(i, i) for i in range(self.num_node)]
             neighbor_1base = [[i, i + 1] for i in range(9 - 1)] + \
@@ -100,7 +100,7 @@ class Graph:
             self.edge = self_link + neighbor_link
             self.center = self.num_node - 1
 
-        elif layout == 'ytasl_left' or layout == 'ytasl_right':
+        elif layout in ['default_ytasl_left', 'default_ytasl_right', 'pruned_ytasl_left', 'pruned_ytasl_right']:
             self.num_node = 21
             self_link = [(i, i) for i in range(self.num_node)]
             neighbor_1base = [
@@ -130,7 +130,7 @@ class Graph:
             self.edge = self_link + neighbor_link
             self.center = 0
 
-        elif layout == 'ytasl_body':
+        elif layout == 'default_ytasl_body':
             self.num_node = 25
             self_link = [(i, i) for i in range(self.num_node)]
             neighbor_1base = [
@@ -164,7 +164,7 @@ class Graph:
             self.edge = self_link + neighbor_link
             self.center = 0
 
-        elif layout == 'ytasl_face_all':
+        elif layout == 'default_ytasl_face_all':
             self.num_node = 37
             self_link = [(i, i) for i in range(self.num_node)]
             neighbor_1base = [
@@ -204,6 +204,49 @@ class Graph:
             neighbor_link = neighbor_1base
             self.edge = self_link + neighbor_link
             self.center = self.num_node - 1
+
+        elif layout == 'pruned_ytasl_body':
+            self.num_node = 9
+            self_link = [(i, i) for i in range(self.num_node)]
+            neighbor_1base = [
+                [0, 1],
+                [0, 2],
+                [0, 3],
+                [0, 4],
+                [3, 5],
+                [4, 6],
+                [5, 7],
+                [6, 8],
+            ]
+            neighbor_link = neighbor_1base
+            self.edge = self_link + neighbor_link
+            self.center = 0
+
+        elif layout == 'pruned_ytasl_face_all':
+            self.num_node = 18
+            self_link = [(i, i) for i in range(self.num_node)]
+            neighbor_1base = [
+                [5, 8],
+                [8, 6],
+                [6, 14],
+                [14, 12],
+                [3, 4],
+                [4, 1],
+                [1, 11],
+                [11, 10],
+                [3, 9],
+                [9, 2],
+                [2, 15],
+                [15, 10],
+                [7, 16],
+                [13, 17],
+            ]
+            neighbor_link = neighbor_1base
+            self.edge = self_link + neighbor_link
+            self.center = self.num_node - 1
+
+        else:
+            raise NotImplementedError(f"Layout not implemented for: {layout}")
 
     def get_adjacency(self, strategy):
         valid_hop = range(0, self.max_hop + 1, self.dilation)
