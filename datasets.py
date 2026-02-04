@@ -20,7 +20,7 @@ def all_same(keypoints):
     return np.sum(keypoints == keypoints[0, 0]) == keypoints.size
 
 
-def sign_space_normalization(raw_keypoints, missing_values=None):
+def sign_space_normalization(raw_keypoints, missing_values=None, layout='default'):
     local_landmarks = {}
     global_landmarks = {}
     kp_normalization = ('global-body', 'local-right', 'local-left', 'local-face_all')
@@ -44,10 +44,16 @@ def sign_space_normalization(raw_keypoints, missing_values=None):
     if "body" in additional_landmarks:
         additional_landmarks.remove("body")
 
+    if layout == 'default':
+        l_shoulder_idx, r_shoulder_idx = 11, 12
+    else:
+        l_shoulder_idx, r_shoulder_idx = 3, 4
     keypoints, additional_keypoints = global_keypoint_normalization(
         raw_keypoints,
         "body",
-        additional_landmarks
+        additional_landmarks,
+        l_shoulder_idx=l_shoulder_idx,
+        r_shoulder_idx=r_shoulder_idx,
     )
 
     for k, landmark in global_landmarks.items():
@@ -76,9 +82,6 @@ def load_part_kp_YTASL(skeletons, confs, normalization, layout):
     confs_all_parts = {}
     scale = None
 
-    import matplotlib.pyplot as plt
-    import numpy as np
-
     for part in ['body', 'left', 'right', 'face_all']:
         kps = []
         confidences = []
@@ -93,20 +96,26 @@ def load_part_kp_YTASL(skeletons, confs, normalization, layout):
                     hand_kp2d = np.stack([skeleton['pose_landmarks'][i] for i in pose_landmarks])
                     confidence = np.stack([conf['pose_landmarks'][i] for i in pose_landmarks])
                 elif layout == 'isharah':
-                    pass # TODO
+                    # TODO
+                    print('Isharah layout not implemented yet')
+                    raise NotImplementedError
             elif part == 'left':
                 if layout in ['default', 'pruned']:
                     hand_kp2d = np.stack(skeleton['left_hand_landmarks'])
                     confidence = np.stack(conf['left_hand_landmarks'])
                 elif layout == 'isharah':
-                    pass # TODO
+                    # TODO
+                    print('Isharah layout not implemented yet')
+                    raise NotImplementedError
 
             elif part == 'right':
                 if layout in ['default', 'pruned']:
                     hand_kp2d = np.stack(skeleton['right_hand_landmarks'])
                     confidence = np.stack(conf['right_hand_landmarks'])
                 elif layout == 'isharah':
-                    pass # TODO
+                    # TODO
+                    print('Isharah layout not implemented yet')
+                    raise NotImplementedError
 
             elif part == 'face_all':
                 if layout == 'default':
@@ -122,7 +131,9 @@ def load_part_kp_YTASL(skeletons, confs, normalization, layout):
                     hand_kp2d = np.stack([skeleton['face_landmarks'][i] for i in face_landmarks])
                     confidence = np.stack([conf['face_landmarks'][i] for i in face_landmarks])
                 elif layout == 'isharah':
-                    pass # TODO
+                    # TODO
+                    print('Isharah layout not implemented yet')
+                    raise NotImplementedError
 
             else:
                 raise NotImplementedError
@@ -136,7 +147,7 @@ def load_part_kp_YTASL(skeletons, confs, normalization, layout):
         confs_all_parts[part] = confidences[..., None]
 
     if normalization == 'signspace':
-        normalized_kps = sign_space_normalization(kps_all_parts.copy())
+        normalized_kps = sign_space_normalization(kps_all_parts.copy(), layout=layout)
     else:
         normalized_kps = kps_all_parts
 
