@@ -38,7 +38,7 @@ def main(args):
             project=os.environ.get("WANDB_PROJECT", "default_project"),
             entity=os.environ.get("WANDB_ENTITY", None),
             config=vars(args),
-            name=f"{args.dataset}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            name=f"{os.path.basename(args.output_dir)}-{args.dataset}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
         )
 
     print(f"Creating dataset:")
