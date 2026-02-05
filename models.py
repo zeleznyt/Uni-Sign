@@ -141,12 +141,15 @@ class Uni_Sign(nn.Module):
         self.mt5_tokenizer = T5Tokenizer.from_pretrained(mt5_path, legacy=False)
 
         self.n_registers = args.n_registers
-        self.d_model = self.mt5_model.config.d_model  # should be 768
-        self.register_tokens = nn.Parameter(torch.zeros(self.n_registers, self.d_model))
         self.register_position = args.register_position
+        self.d_model = self.mt5_model.config.d_model  # should be 768
 
-        # init like other embeddings
-        trunc_normal_(self.register_tokens, std=0.02)
+        if self.n_registers > 0:
+            self.register_tokens = nn.Parameter(torch.zeros(self.n_registers, self.d_model))
+            # init like other embeddings
+            trunc_normal_(self.register_tokens, std=0.02)
+        else:
+            self.register_tokens = None
     
         
     def _init_weights(self, m):
