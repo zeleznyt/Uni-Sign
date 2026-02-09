@@ -275,6 +275,14 @@ def init_distributed_mode_ds(args):
         args.rank = int(os.environ['SLURM_PROCID'])
         args.gpu = args.rank % torch.cuda.device_count()
     else:
+        # Single-process fallback for debug or non-launcher runs
+        os.environ.setdefault("RANK", "0")
+        os.environ.setdefault("WORLD_SIZE", "1")
+        os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+        os.environ.setdefault("MASTER_PORT", "29500")
+        args.rank = 0
+        args.world_size = 1
+        args.gpu = 0
         print('Not using distributed mode')
         args.distributed = False
         return

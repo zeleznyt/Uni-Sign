@@ -20,14 +20,6 @@ from config import *
 import wandb
 import numpy as np
 
-import torch.distributed as dist
-
-if not dist.is_available():
-    raise RuntimeError("Requires PyTorch distributed support")
-if not dist.is_initialized():
-    dist.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:29500', world_size=1, rank=0)
-
-
 def main(args):
     utils.init_distributed_mode_ds(args)
 
@@ -75,7 +67,10 @@ def main(args):
         train_data = S2T_Dataset(path=train_label_paths[args.dataset],
                                  args=args, phase='train')
     print(train_data)
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_data, shuffle=True)
+    if args.distributed:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_data, shuffle=True)
+    else:
+        train_sampler = torch.utils.data.RandomSampler(train_data)
     train_dataloader = DataLoader(train_data,
                                   batch_size=args.batch_size,
                                   num_workers=args.num_workers,
@@ -92,11 +87,12 @@ def main(args):
     #     args=args
     # )
     # # model.cuda()
-    # # model.train()
-    # # for name, param in model.named_parameters():
-    # #     if param.requires_grad:
-    # #         param.data = param.data.to(torch.float32)
+    # model.train()
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         param.data = param.data.to(torch.float32)
     # src_input, tgt_input = next(iter(train_dataloader))
+    # # src_input, tgt_input = src_input.cuda(), tgt_input.cuda()
     # out = model(src_input, tgt_input)
     #
     # for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(train_dataloader, print_freq, header)):
@@ -107,7 +103,8 @@ def main(args):
     #
     #     for key in src_input.keys():
     #         if isinstance(src_input[key], torch.Tensor):
-    #             src_input[key] = src_input[key].cuda()
+    #             # src_input[key] = src_input[key].cuda()
+    #             src_input[key] = src_input[key]
     #             # src_input[key] = src_input[key].to(torch.bfloat16).cuda()
     #
     #     stack_out = model(src_input, tgt_input)
