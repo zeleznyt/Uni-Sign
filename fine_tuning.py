@@ -11,12 +11,14 @@ import argparse, json, datetime
 from pathlib import Path
 import math
 import sys
+import random
 from timm.optim import create_optimizer
 from models import get_requires_grad_dict
 from SLRT_metrics import translation_performance, islr_performance, wer_list
 from transformers import get_scheduler
 from config import *
 import wandb
+import numpy as np
 
 import torch.distributed as dist
 
@@ -32,13 +34,36 @@ def main(args):
     print(args)
     utils.set_seed(args.seed)
 
+    if args.finetune and args.resume:
+        raise ValueError("Use only one of --finetune (weights-only) or --resume (full state).")
+
+    resume_checkpoint = None
+    if args.resume:
+        print('***********************************')
+        print('Resume Checkpoint...')
+        print('***********************************')
+        resume_checkpoint = torch.load(args.resume, map_location='cpu')
+
+    wandb_run_id = None
+    wandb_run_name = None
+    if args.wandb_id:
+        wandb_run_id = args.wandb_id
+    elif resume_checkpoint is not None:
+        wandb_run_id = resume_checkpoint.get('wandb_run_id', None)
+        wandb_run_name = resume_checkpoint.get('wandb_run_name', None)
+
     # Only main process logs to wandb
     if utils.is_main_process() and args.wandb:
+        init_kwargs = {}
+        if wandb_run_id:
+            init_kwargs["id"] = wandb_run_id
+            init_kwargs["resume"] = "allow"
         wandb.init(
             project=os.environ.get("WANDB_PROJECT", "default_project"),
             entity=os.environ.get("WANDB_ENTITY", None),
             config=vars(args),
-            name=f"{os.path.basename(args.output_dir)}-{args.dataset}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            name=wandb_run_name or f"{os.path.basename(args.output_dir)}-{args.dataset}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            **init_kwargs
         )
 
     print(f"Creating dataset:")
@@ -59,34 +84,35 @@ def main(args):
                                   pin_memory=args.pin_mem,
                                   drop_last=True)
 
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    header = 'Epoch: [{}/{}]'.format(1, args.epochs)
-    print_freq = 10
-
-    model = Uni_Sign(
-        args=args
-    )
-    model.cuda()
-    # model.train()
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         param.data = param.data.to(torch.float32)
-
-    for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(train_dataloader, print_freq, header)):
-        print(step)
-
-        if args.task == "CSLR":
-            tgt_input['gt_sentence'] = tgt_input['gt_gloss']
-
-        for key in src_input.keys():
-            if isinstance(src_input[key], torch.Tensor):
-                src_input[key] = src_input[key].cuda()
-                # src_input[key] = src_input[key].to(torch.bfloat16).cuda()
-
-        stack_out = model(src_input, tgt_input)
-        print(stack_out)
-        break
+    # metric_logger = utils.MetricLogger(delimiter="  ")
+    # metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    # header = 'Epoch: [{}/{}]'.format(1, args.epochs)
+    # print_freq = 10
+    # model = Uni_Sign(
+    #     args=args
+    # )
+    # # model.cuda()
+    # # model.train()
+    # # for name, param in model.named_parameters():
+    # #     if param.requires_grad:
+    # #         param.data = param.data.to(torch.float32)
+    # src_input, tgt_input = next(iter(train_dataloader))
+    # out = model(src_input, tgt_input)
+    #
+    # for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(train_dataloader, print_freq, header)):
+    #     print(step)
+    #
+    #     if args.task == "CSLR":
+    #         tgt_input['gt_sentence'] = tgt_input['gt_gloss']
+    #
+    #     for key in src_input.keys():
+    #         if isinstance(src_input[key], torch.Tensor):
+    #             src_input[key] = src_input[key].cuda()
+    #             # src_input[key] = src_input[key].to(torch.bfloat16).cuda()
+    #
+    #     stack_out = model(src_input, tgt_input)
+    #     print(stack_out)
+    #     break
 
 
 
@@ -136,9 +162,18 @@ def main(args):
         if param.requires_grad:
             param.data = param.data.to(torch.float32)
 
-    if args.finetune != '':
+    if resume_checkpoint is not None:
+        print('***********************************')
+        print('Load Resume Model...')
+        print('***********************************')
+        state_dict = resume_checkpoint['model']
+        ret = model.load_state_dict(state_dict, strict=True)
+        print('Missing keys: \n', '\n'.join(ret.missing_keys))
+        print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
+    elif args.finetune != '':
         print('***********************************')
         print('Load Checkpoint...')
+        print('Weights-only finetune (optimizer/scheduler will reset)')
         print('***********************************')
         state_dict = torch.load(args.finetune, map_location='cpu')['model']
 
@@ -174,6 +209,14 @@ def main(args):
     max_accuracy = 0
     if args.task == "CSLR":
         max_accuracy = 1000
+    start_epoch = 0
+
+    if resume_checkpoint is not None:
+        start_epoch = resume_checkpoint.get('epoch', -1) + 1
+        max_accuracy = resume_checkpoint.get('max_accuracy', max_accuracy)
+        if start_epoch >= args.epochs:
+            print(f"Resume epoch {start_epoch} >= total epochs {args.epochs}; nothing to do.")
+            return
 
     if args.eval:
         if utils.is_main_process():
@@ -185,8 +228,21 @@ def main(args):
 
         return
     print(f"Start training for {args.epochs} epochs")
+    if resume_checkpoint is not None:
+        if 'optimizer' in resume_checkpoint:
+            optimizer.load_state_dict(resume_checkpoint['optimizer'])
+        if 'lr_scheduler' in resume_checkpoint:
+            lr_scheduler.load_state_dict(resume_checkpoint['lr_scheduler'])
+        if 'rng_state' in resume_checkpoint:
+            torch.set_rng_state(resume_checkpoint['rng_state'])
+        if 'cuda_rng_state' in resume_checkpoint:
+            torch.cuda.set_rng_state_all(resume_checkpoint['cuda_rng_state'])
+        if 'numpy_rng_state' in resume_checkpoint:
+            np.random.set_state(resume_checkpoint['numpy_rng_state'])
+        if 'random_rng_state' in resume_checkpoint:
+            random.setstate(resume_checkpoint['random_rng_state'])
 
-    for epoch in range(0, args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         epoch_start_time = time.time()
 
         if args.distributed:
@@ -199,6 +255,17 @@ def main(args):
             for checkpoint_path in checkpoint_paths:
                 utils.save_on_master({
                     'model': get_requires_grad_dict(model_without_ddp),
+                    'optimizer': optimizer.state_dict(),
+                    'lr_scheduler': lr_scheduler.state_dict(),
+                    'epoch': epoch,
+                    'max_accuracy': max_accuracy,
+                    'wandb_run_id': wandb.run.id if args.wandb and utils.is_main_process() and wandb.run else None,
+                    'wandb_run_name': wandb.run.name if args.wandb and utils.is_main_process() and wandb.run else None,
+                    'rng_state': torch.get_rng_state(),
+                    'cuda_rng_state': torch.cuda.get_rng_state_all(),
+                    'numpy_rng_state': np.random.get_state(),
+                    'random_rng_state': random.getstate(),
+                    'global_step': (epoch + 1) * len(train_dataloader),
                 }, checkpoint_path)
 
         # single gpu inference

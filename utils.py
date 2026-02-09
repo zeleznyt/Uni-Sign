@@ -459,8 +459,12 @@ def get_args_parser():
     parser.add_argument('--local-rank', default=0, type=int)
     parser.add_argument("--hidden_dim", default=256, type=int)
 
-    # * Finetuning params
-    parser.add_argument('--finetune', default='', help='finetune from checkpoint')
+    # * Checkpoint loading
+    parser.add_argument('--finetune', default='',
+                        help='load weights only (start new run; optimizer/scheduler not restored)')
+    parser.add_argument('--resume', default='',
+                        help='resume full training state (model/optimizer/scheduler/epoch/RNG)')
+    parser.add_argument('--wandb_id', default='', help='wandb run id to resume')
 
     # * Optimizer parameters
     parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
