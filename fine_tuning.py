@@ -20,6 +20,16 @@ from config import *
 import wandb
 import numpy as np
 
+def get_system_job_id():
+    env = os.environ
+    slurm_job_id = env.get("SLURM_JOB_ID") or env.get("SLURM_JOBID")
+    if slurm_job_id:
+        return f"slurm{slurm_job_id}"
+    pbs_job_id = env.get("PBS_JOBID") or env.get("PBS_JOB_ID")
+    if pbs_job_id:
+        return f"pbs{pbs_job_id}"
+    return None
+
 def main(args):
     utils.init_distributed_mode_ds(args)
 
@@ -50,11 +60,16 @@ def main(args):
         if wandb_run_id:
             init_kwargs["id"] = wandb_run_id
             init_kwargs["resume"] = "allow"
+        base_run_name = wandb_run_name or f"{os.path.basename(args.output_dir)}-{args.dataset}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        system_job_id = get_system_job_id()
+        args.system_job_id = system_job_id
+        if system_job_id and system_job_id not in base_run_name:
+            base_run_name = f"{base_run_name}-{system_job_id}"
         wandb.init(
             project=os.environ.get("WANDB_PROJECT", "default_project"),
             entity=os.environ.get("WANDB_ENTITY", None),
             config=vars(args),
-            name=wandb_run_name or f"{os.path.basename(args.output_dir)}-{args.dataset}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            name=base_run_name,
             **init_kwargs
         )
 
