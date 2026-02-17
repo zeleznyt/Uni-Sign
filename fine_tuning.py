@@ -20,6 +20,53 @@ from config import *
 import wandb
 import numpy as np
 
+
+def _resolve_ds_checkpoint_load_args(checkpoint_path):
+    ckpt_path = Path(checkpoint_path)
+    if not ckpt_path.exists():
+        raise FileNotFoundError(f"Checkpoint path does not exist: {checkpoint_path}")
+    if not ckpt_path.is_dir():
+        raise ValueError(
+            f"DeepSpeed checkpoint path must be a directory (got file): {checkpoint_path}"
+        )
+    if ckpt_path.name.startswith("checkpoint_"):
+        return str(ckpt_path.parent), ckpt_path.name, ckpt_path
+    return str(ckpt_path), None, _resolve_latest_tag_dir(ckpt_path)
+
+
+def _resolve_latest_tag_dir(output_dir_path):
+    latest_path = output_dir_path / "latest"
+    if not latest_path.exists():
+        return None
+    tag = latest_path.read_text().strip()
+    if not tag:
+        return None
+    return output_dir_path / tag
+
+
+def _print_ds_checkpoint_file_hints(tag_dir):
+    if tag_dir is None:
+        print("DeepSpeed checkpoint hint: could not resolve specific tag directory (no readable 'latest').")
+        return
+    if not tag_dir.exists() or not tag_dir.is_dir():
+        print(f"DeepSpeed checkpoint hint: expected tag directory does not exist: {tag_dir}")
+        return
+
+    model_state = tag_dir / "mp_rank_00_model_states.pt"
+    optim_states = list(tag_dir.glob("*_optim_states.pt"))
+    if not model_state.exists():
+        print(f"DeepSpeed checkpoint hint: missing expected file: {model_state}")
+    if len(optim_states) == 0:
+        print(f"DeepSpeed checkpoint hint: missing expected optimizer shard file in {tag_dir} (pattern '*_optim_states.pt').")
+
+
+def load_weights_from_torch_checkpoint(model_without_ddp, ckpt_path):
+    state_dict = torch.load(ckpt_path, map_location='cpu')['model']
+    ret = model_without_ddp.load_state_dict(state_dict, strict=True)
+    print('Missing keys: \n', '\n'.join(ret.missing_keys))
+    print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
+
+
 def get_system_job_id():
     env = os.environ
     slurm_job_id = env.get("SLURM_JOB_ID") or env.get("SLURM_JOBID")
@@ -39,39 +86,8 @@ def main(args):
     if args.finetune and args.resume:
         raise ValueError("Use only one of --finetune (weights-only) or --resume (full state).")
 
-    resume_checkpoint = None
-    if args.resume:
-        print('***********************************')
-        print('Resume Checkpoint...')
-        print('***********************************')
-        resume_checkpoint = torch.load(args.resume, map_location='cpu')
-
     wandb_run_id = None
     wandb_run_name = None
-    if args.wandb_id:
-        wandb_run_id = args.wandb_id
-    elif resume_checkpoint is not None:
-        wandb_run_id = resume_checkpoint.get('wandb_run_id', None)
-        wandb_run_name = resume_checkpoint.get('wandb_run_name', None)
-
-    # Only main process logs to wandb
-    if utils.is_main_process() and args.wandb:
-        init_kwargs = {}
-        if wandb_run_id:
-            init_kwargs["id"] = wandb_run_id
-            init_kwargs["resume"] = "allow"
-        base_run_name = wandb_run_name or f"{os.path.basename(args.output_dir)}-{args.dataset}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        system_job_id = get_system_job_id()
-        args.system_job_id = system_job_id
-        if system_job_id and system_job_id not in base_run_name:
-            base_run_name = f"{base_run_name}-{system_job_id}"
-        wandb.init(
-            project=os.environ.get("WANDB_PROJECT", "default_project"),
-            entity=os.environ.get("WANDB_ENTITY", None),
-            config=vars(args),
-            name=base_run_name,
-            **init_kwargs
-        )
 
     print(f"Creating dataset:")
 
@@ -174,24 +190,21 @@ def main(args):
         if param.requires_grad:
             param.data = param.data.to(torch.float32)
 
-    if resume_checkpoint is not None:
-        print('***********************************')
-        print('Load Resume Model...')
-        print('***********************************')
-        state_dict = resume_checkpoint['model']
-        ret = model.load_state_dict(state_dict, strict=True)
-        print('Missing keys: \n', '\n'.join(ret.missing_keys))
-        print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
-    elif args.finetune != '':
+    finetune_from_ds_dir = False
+    if args.finetune != '':
         print('***********************************')
         print('Load Checkpoint...')
         print('Weights-only finetune (optimizer/scheduler will reset)')
         print('***********************************')
-        state_dict = torch.load(args.finetune, map_location='cpu')['model']
-
-        ret = model.load_state_dict(state_dict, strict=True)
-        print('Missing keys: \n', '\n'.join(ret.missing_keys))
-        print('Unexpected keys: \n', '\n'.join(ret.unexpected_keys))
+        finetune_path = Path(args.finetune)
+        if not finetune_path.exists():
+            raise FileNotFoundError(f"Finetune checkpoint not found: {args.finetune}")
+        if finetune_path.is_file():
+            load_weights_from_torch_checkpoint(model, args.finetune)
+        elif finetune_path.is_dir():
+            finetune_from_ds_dir = True
+        else:
+            raise ValueError(f"Unsupported --finetune path: {args.finetune}")
 
     model_without_ddp = model
     if args.distributed:
@@ -222,13 +235,87 @@ def main(args):
     if args.task == "CSLR":
         max_accuracy = 1000
     start_epoch = 0
+    client_state = {}
 
-    if resume_checkpoint is not None:
-        start_epoch = resume_checkpoint.get('epoch', -1) + 1
-        max_accuracy = resume_checkpoint.get('max_accuracy', max_accuracy)
+    if args.resume:
+        print('***********************************')
+        print('Resume Checkpoint (DeepSpeed)...')
+        print('***********************************')
+        load_dir, load_tag, tag_dir = _resolve_ds_checkpoint_load_args(args.resume)
+        if utils.is_main_process():
+            _print_ds_checkpoint_file_hints(tag_dir)
+
+        load_path, client_state = model.load_checkpoint(
+            load_dir,
+            tag=load_tag,
+            load_module_strict=True,
+            load_optimizer_states=True,
+            load_lr_scheduler_states=True,
+        )
+        if load_path is None:
+            raise RuntimeError(f"Failed to load DeepSpeed checkpoint from: {args.resume}")
+        print(f"Loaded DeepSpeed checkpoint: {load_path}")
+
+        start_epoch = client_state.get('epoch', -1) + 1
+        max_accuracy = client_state.get('max_accuracy', max_accuracy)
+        if not wandb_run_id:
+            wandb_run_id = client_state.get('wandb_run_id')
+        wandb_run_name = client_state.get('wandb_run_name')
+        if 'rng_state' in client_state:
+            torch.set_rng_state(client_state['rng_state'])
+        if 'cuda_rng_state' in client_state:
+            torch.cuda.set_rng_state_all(client_state['cuda_rng_state'])
+        if 'numpy_rng_state' in client_state:
+            np.random.set_state(client_state['numpy_rng_state'])
+        if 'random_rng_state' in client_state:
+            random.setstate(client_state['random_rng_state'])
         if start_epoch >= args.epochs:
             print(f"Resume epoch {start_epoch} >= total epochs {args.epochs}; nothing to do.")
             return
+
+    if finetune_from_ds_dir:
+        load_dir, load_tag, tag_dir = _resolve_ds_checkpoint_load_args(args.finetune)
+        if utils.is_main_process():
+            _print_ds_checkpoint_file_hints(tag_dir)
+        try:
+            load_path, _ = model.load_checkpoint(
+                load_dir,
+                tag=load_tag,
+                load_module_strict=True,
+                load_optimizer_states=False,
+                load_lr_scheduler_states=False,
+                load_module_only=True,
+            )
+        except TypeError:
+            load_path, _ = model.load_checkpoint(
+                load_dir,
+                tag=load_tag,
+                load_module_strict=True,
+                load_optimizer_states=False,
+                load_lr_scheduler_states=False,
+            )
+        if load_path is None:
+            raise RuntimeError(f"Failed to load DeepSpeed weights-only checkpoint from: {args.finetune}")
+        print(f"Loaded DeepSpeed weights-only checkpoint: {load_path}")
+
+    # Only main process logs to wandb
+    if utils.is_main_process() and args.wandb:
+        init_kwargs = {}
+        if wandb_run_id:
+            init_kwargs["id"] = wandb_run_id
+            init_kwargs["resume"] = "allow"
+        base_run_name = wandb_run_name or f"{os.path.basename(args.output_dir)}-{args.dataset}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        system_job_id = get_system_job_id()
+        args.system_job_id = system_job_id
+        if system_job_id and system_job_id not in base_run_name:
+            base_run_name = f"{base_run_name}-{system_job_id}"
+        wandb.init(
+            project=os.environ.get("WANDB_PROJECT", "default_project"),
+            entity=os.environ.get("WANDB_ENTITY", None),
+            config=vars(args),
+            name=base_run_name,
+            **init_kwargs
+        )
 
     if args.eval:
         if utils.is_main_process():
@@ -240,19 +327,6 @@ def main(args):
 
         return
     print(f"Start training for {args.epochs} epochs")
-    if resume_checkpoint is not None:
-        if 'optimizer' in resume_checkpoint:
-            optimizer.load_state_dict(resume_checkpoint['optimizer'])
-        if 'lr_scheduler' in resume_checkpoint:
-            lr_scheduler.load_state_dict(resume_checkpoint['lr_scheduler'])
-        if 'rng_state' in resume_checkpoint:
-            torch.set_rng_state(resume_checkpoint['rng_state'])
-        if 'cuda_rng_state' in resume_checkpoint:
-            torch.cuda.set_rng_state_all(resume_checkpoint['cuda_rng_state'])
-        if 'numpy_rng_state' in resume_checkpoint:
-            np.random.set_state(resume_checkpoint['numpy_rng_state'])
-        if 'random_rng_state' in resume_checkpoint:
-            random.setstate(resume_checkpoint['random_rng_state'])
 
     for epoch in range(start_epoch, args.epochs):
         epoch_start_time = time.time()
@@ -263,22 +337,18 @@ def main(args):
         train_stats = train_one_epoch(args, model, train_dataloader, optimizer, epoch)
 
         if args.output_dir:
-            checkpoint_paths = [output_dir / f'checkpoint_{epoch}.pth']
-            for checkpoint_path in checkpoint_paths:
-                utils.save_on_master({
-                    'model': get_requires_grad_dict(model_without_ddp),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                    'max_accuracy': max_accuracy,
-                    'wandb_run_id': wandb.run.id if args.wandb and utils.is_main_process() and wandb.run else None,
-                    'wandb_run_name': wandb.run.name if args.wandb and utils.is_main_process() and wandb.run else None,
-                    'rng_state': torch.get_rng_state(),
-                    'cuda_rng_state': torch.cuda.get_rng_state_all(),
-                    'numpy_rng_state': np.random.get_state(),
-                    'random_rng_state': random.getstate(),
-                    'global_step': (epoch + 1) * len(train_dataloader),
-                }, checkpoint_path)
+            ds_client_state = {
+                'epoch': epoch,
+                'max_accuracy': max_accuracy,
+                'wandb_run_id': wandb.run.id if args.wandb and utils.is_main_process() and wandb.run else None,
+                'wandb_run_name': wandb.run.name if args.wandb and utils.is_main_process() and wandb.run else None,
+                'rng_state': torch.get_rng_state(),
+                'cuda_rng_state': torch.cuda.get_rng_state_all(),
+                'numpy_rng_state': np.random.get_state(),
+                'random_rng_state': random.getstate(),
+                'global_step': (epoch + 1) * len(train_dataloader),
+            }
+            model.save_checkpoint(str(output_dir), tag=f'checkpoint_{epoch}', client_state=ds_client_state)
 
         # single gpu inference
         if utils.is_main_process():

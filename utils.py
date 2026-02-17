@@ -469,10 +469,9 @@ def get_args_parser():
 
     # * Checkpoint loading
     parser.add_argument('--finetune', default='',
-                        help='load weights only (start new run; optimizer/scheduler not restored)')
+                        help='load weights only from .pth file or DeepSpeed checkpoint dir (optimizer/scheduler not restored)')
     parser.add_argument('--resume', default='',
-                        help='resume full training state (model/optimizer/scheduler/epoch/RNG)')
-    parser.add_argument('--wandb_id', default='', help='wandb run id to resume')
+                        help='resume full training state from DeepSpeed checkpoint dir (model/optimizer/scheduler/epoch/RNG)')
 
     # * Optimizer parameters
     parser.add_argument('--opt', default='adamw', type=str, metavar='OPTIMIZER',
