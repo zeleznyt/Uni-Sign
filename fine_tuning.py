@@ -318,12 +318,14 @@ def main(args):
         )
 
     if args.eval:
-        if utils.is_main_process():
-            if args.task != "ISLR":
+        # Run eval on all ranks to keep DeepSpeed/NCCL collectives aligned.
+        if args.task != "ISLR":
+            if utils.is_main_process():
                 print("📄 dev result")
-                evaluate(args, dev_dataloader, model, model_without_ddp, phase='dev')
+            evaluate(args, dev_dataloader, model, model_without_ddp, phase='dev')
+        if utils.is_main_process():
             print("📄 test result")
-            evaluate(args, test_dataloader, model, model_without_ddp, phase='test')
+        evaluate(args, test_dataloader, model, model_without_ddp, phase='test')
 
         return
     print(f"Start training for {args.epochs} epochs")
@@ -353,11 +355,11 @@ def main(args):
                 # Keep all ranks aligned before rank-0-only evaluation/logging.
                 torch.distributed.barrier()
 
-        # single gpu inference
-        if utils.is_main_process():
-            dev_stats = evaluate(args, dev_dataloader, model, model_without_ddp, phase='dev')
-            # evaluate(args, test_dataloader, model, model_without_ddp, phase='test')
+        # Evaluate on all ranks so DeepSpeed collective ops remain matched.
+        dev_stats = evaluate(args, dev_dataloader, model, model_without_ddp, phase='dev')
+        # evaluate(args, test_dataloader, model, model_without_ddp, phase='test')
 
+        if utils.is_main_process():
             if args.task == "SLT":
                 if max_accuracy < dev_stats["bleu4"]:
                     max_accuracy = dev_stats["bleu4"]
