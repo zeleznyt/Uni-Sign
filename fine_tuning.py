@@ -349,6 +349,9 @@ def main(args):
                 'global_step': (epoch + 1) * len(train_dataloader),
             }
             model.save_checkpoint(str(output_dir), tag=f'checkpoint_{epoch}', client_state=ds_client_state)
+            if args.distributed and torch.distributed.is_initialized():
+                # Keep all ranks aligned before rank-0-only evaluation/logging.
+                torch.distributed.barrier()
 
         # single gpu inference
         if utils.is_main_process():
@@ -407,6 +410,10 @@ def main(args):
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
+
+        if args.distributed and torch.distributed.is_initialized():
+            # Non-zero ranks skip eval; wait for rank 0 to finish before next epoch collectives.
+            torch.distributed.barrier()
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
