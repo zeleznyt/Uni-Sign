@@ -267,6 +267,10 @@ def init_distributed_mode(args):
 def init_distributed_mode_ds(args):
     if "LOCAL_RANK" not in os.environ:
         os.environ["LOCAL_RANK"] = str(args.local_rank)
+    if "RANK" in os.environ:
+        args.rank = int(os.environ["RANK"])
+    if "LOCAL_RANK" in os.environ:
+        args.local_rank = int(os.environ["LOCAL_RANK"])
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
