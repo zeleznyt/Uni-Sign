@@ -153,8 +153,14 @@ def main(args):
     # dev_data = S2T_Dataset(path=dev_label_paths[args.dataset],
     #                        args=args, phase='dev')
     print(dev_data)
-    # dev_sampler = torch.utils.data.distributed.DistributedSampler(dev_data,shuffle=False)
-    dev_sampler = torch.utils.data.SequentialSampler(dev_data)
+    if args.distributed:
+        dev_sampler = torch.utils.data.distributed.DistributedSampler(
+            dev_data,
+            shuffle=False,
+            drop_last=False
+        )
+    else:
+        dev_sampler = torch.utils.data.SequentialSampler(dev_data)
     dev_dataloader = DataLoader(dev_data,
                                 batch_size=args.batch_size,
                                 num_workers=args.num_workers,
@@ -171,8 +177,14 @@ def main(args):
     # test_data = S2T_Dataset(path=test_label_paths[args.dataset],
     #                         args=args, phase='test')
     print(test_data)
-    # test_sampler = torch.utils.data.distributed.DistributedSampler(test_data,shuffle=False)
-    test_sampler = torch.utils.data.SequentialSampler(test_data)
+    if args.distributed:
+        test_sampler = torch.utils.data.distributed.DistributedSampler(
+            test_data,
+            shuffle=False,
+            drop_last=False
+        )
+    else:
+        test_sampler = torch.utils.data.SequentialSampler(test_data)
     test_dataloader = DataLoader(test_data,
                                  batch_size=args.batch_size,
                                  num_workers=args.num_workers,
@@ -546,8 +558,8 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
         for k, v in wer_results.items():
             metric_logger.meters[k].update(v)
 
-    # # gather the stats from all processes
-    # metric_logger.synchronize_between_processes()
+    # gather the stats from all processes
+    metric_logger.synchronize_between_processes()
 
     if utils.is_main_process() and utils.get_world_size() == 1 and args.eval:
         with open(args.output_dir + f'/{phase}_tmp_pres.txt', 'w') as f:
