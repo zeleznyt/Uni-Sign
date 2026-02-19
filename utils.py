@@ -444,6 +444,21 @@ def init_deepspeed(args, model, optimizer, lr_scheduler):
         print("Using deepspeed to train...")
         print("Initializing deepspeed...")
         dist_init_required = bool(getattr(args, "distributed", False) and getattr(args, "world_size", 1) > 1)
+        if not dist_init_required and torch.distributed.is_available() and not torch.distributed.is_initialized():
+            # DeepSpeed 0.17.x expects an initialized backend even in 1-process runs.
+            os.environ.setdefault("RANK", "0")
+            os.environ.setdefault("WORLD_SIZE", "1")
+            os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+            os.environ.setdefault("MASTER_PORT", "29500")
+            backend = getattr(args, "dist_backend", None)
+            if backend is None:
+                backend = "nccl" if torch.cuda.is_available() else "gloo"
+            torch.distributed.init_process_group(
+                backend=backend,
+                init_method="env://",
+                world_size=1,
+                rank=0,
+            )
         _wrapped_model, _optimizer, _, _lr_sched = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
