@@ -38,6 +38,17 @@ import deepspeed.comm as dist
 from deepspeed.accelerator import get_accelerator
 
 
+class _DSCompatModuleWrapper(torch.nn.Module):
+    """Keep DeepSpeed wrapper shape consistent: engine.module.module -> base model."""
+
+    def __init__(self, module):
+        super().__init__()
+        self.module = module
+
+    def forward(self, *args, **kwargs):
+        return self.module(*args, **kwargs)
+
+
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
     window or the global series average.
@@ -271,15 +282,20 @@ def init_distributed_mode_ds(args):
         args.rank = int(os.environ["RANK"])
     if "LOCAL_RANK" in os.environ:
         args.local_rank = int(os.environ["LOCAL_RANK"])
+
+    launched = False
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        launched = True
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
         args.gpu = int(os.environ.get('LOCAL_RANK', 0))
     elif 'SLURM_PROCID' in os.environ:
+        launched = True
         args.rank = int(os.environ['SLURM_PROCID'])
         args.world_size = int(os.environ.get('WORLD_SIZE', '1'))
         args.gpu = args.rank % torch.cuda.device_count()
-    else:
+
+    if (not launched) or args.world_size <= 1:
         # Single-process fallback for debug or non-launcher runs
         os.environ.setdefault("RANK", "0")
         os.environ.setdefault("WORLD_SIZE", "1")
@@ -288,13 +304,6 @@ def init_distributed_mode_ds(args):
         args.rank = 0
         args.world_size = 1
         args.gpu = 0
-        print('Not using distributed mode')
-        args.distributed = False
-        return
-
-    if args.world_size <= 1:
-        args.rank = 0
-        args.world_size = 1
         args.distributed = False
         print('Not using distributed mode')
         return
@@ -443,29 +452,16 @@ def init_deepspeed(args, model, optimizer, lr_scheduler):
     if use_deepspeed:
         print("Using deepspeed to train...")
         print("Initializing deepspeed...")
-        dist_init_required = bool(getattr(args, "distributed", False) and getattr(args, "world_size", 1) > 1)
-        if not dist_init_required and torch.distributed.is_available() and not torch.distributed.is_initialized():
-            # DeepSpeed 0.17.x expects an initialized backend even in 1-process runs.
-            os.environ.setdefault("RANK", "0")
-            os.environ.setdefault("WORLD_SIZE", "1")
-            os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
-            os.environ.setdefault("MASTER_PORT", "29500")
-            backend = getattr(args, "dist_backend", None)
-            if backend is None:
-                backend = "nccl" if torch.cuda.is_available() else "gloo"
-            torch.distributed.init_process_group(
-                backend=backend,
-                init_method="env://",
-                world_size=1,
-                rank=0,
-            )
+        model_for_ds = model
+        if not getattr(args, "distributed", False):
+            model_for_ds = _DSCompatModuleWrapper(model)
         _wrapped_model, _optimizer, _, _lr_sched = deepspeed.initialize(
-            model=model,
+            model=model_for_ds,
             optimizer=optimizer,
             args=args,
             config=ds_config,
             lr_scheduler=lr_scheduler,
-            dist_init_required=dist_init_required)
+            dist_init_required=True)
     
     return _wrapped_model, _optimizer, _lr_sched
 
