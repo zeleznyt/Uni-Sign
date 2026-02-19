@@ -274,9 +274,10 @@ def init_distributed_mode_ds(args):
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
-        args.gpu = int(os.environ['LOCAL_RANK'])
+        args.gpu = int(os.environ.get('LOCAL_RANK', 0))
     elif 'SLURM_PROCID' in os.environ:
         args.rank = int(os.environ['SLURM_PROCID'])
+        args.world_size = int(os.environ.get('WORLD_SIZE', '1'))
         args.gpu = args.rank % torch.cuda.device_count()
     else:
         # Single-process fallback for debug or non-launcher runs
@@ -289,6 +290,13 @@ def init_distributed_mode_ds(args):
         args.gpu = 0
         print('Not using distributed mode')
         args.distributed = False
+        return
+
+    if args.world_size <= 1:
+        args.rank = 0
+        args.world_size = 1
+        args.distributed = False
+        print('Not using distributed mode')
         return
 
     args.distributed = True
@@ -435,13 +443,14 @@ def init_deepspeed(args, model, optimizer, lr_scheduler):
     if use_deepspeed:
         print("Using deepspeed to train...")
         print("Initializing deepspeed...")
+        dist_init_required = bool(getattr(args, "distributed", False) and getattr(args, "world_size", 1) > 1)
         _wrapped_model, _optimizer, _, _lr_sched = deepspeed.initialize(
             model=model,
             optimizer=optimizer,
             args=args,
             config=ds_config,
             lr_scheduler=lr_scheduler,
-            dist_init_required=True)
+            dist_init_required=dist_init_required)
     
     return _wrapped_model, _optimizer, _lr_sched
 
