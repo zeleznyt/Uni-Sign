@@ -8,6 +8,7 @@ from datasets import S2T_Dataset, S2T_Dataset_YTASL
 import os
 import time
 import argparse, json, datetime
+import shutil
 from pathlib import Path
 import math
 import sys
@@ -58,6 +59,15 @@ def _print_ds_checkpoint_file_hints(tag_dir):
         print(f"DeepSpeed checkpoint hint: missing expected file: {model_state}")
     if len(optim_states) == 0:
         print(f"DeepSpeed checkpoint hint: missing expected optimizer shard file in {tag_dir} (pattern '*_optim_states.pt').")
+
+
+def _cleanup_old_ds_checkpoints(output_dir, keep_tag):
+    for ckpt_dir in output_dir.glob("checkpoint_*"):
+        if not ckpt_dir.is_dir():
+            continue
+        if ckpt_dir.name == keep_tag:
+            continue
+        shutil.rmtree(ckpt_dir, ignore_errors=True)
 
 
 def load_weights_from_torch_checkpoint(model_without_ddp, ckpt_path):
@@ -351,6 +361,7 @@ def main(args):
         train_stats = train_one_epoch(args, model, train_dataloader, optimizer, epoch)
 
         if args.output_dir:
+            current_tag = f'checkpoint_{epoch}'
             ds_client_state = {
                 'epoch': epoch,
                 'max_accuracy': max_accuracy,
@@ -362,9 +373,14 @@ def main(args):
                 'random_rng_state': random.getstate(),
                 'global_step': (epoch + 1) * len(train_dataloader),
             }
-            model.save_checkpoint(str(output_dir), tag=f'checkpoint_{epoch}', client_state=ds_client_state)
+            model.save_checkpoint(str(output_dir), tag=current_tag, client_state=ds_client_state)
             if args.distributed and torch.distributed.is_initialized():
                 # Keep all ranks aligned before rank-0-only evaluation/logging.
+                torch.distributed.barrier()
+            if utils.is_main_process():
+                _cleanup_old_ds_checkpoints(output_dir, keep_tag=current_tag)
+            if args.distributed and torch.distributed.is_initialized():
+                # Keep ranks aligned after rank-0 cleanup before collectives in eval.
                 torch.distributed.barrier()
 
         # Evaluate on all ranks so DeepSpeed collective ops remain matched.
