@@ -602,15 +602,26 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
 
-    if utils.is_main_process() and utils.get_world_size() == 1 and args.eval:
-        with open(args.output_dir + f'/{phase}_tmp_pres.txt', 'w') as f:
-            for i in range(len(tgt_pres)):
-                f.write(tgt_pres[i] + '\n')
-        with open(args.output_dir + f'/{phase}_tmp_refs.txt', 'w') as f:
-            for i in range(len(tgt_refs)):
-                f.write(tgt_refs[i] + '\n')
+    result_metrics = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    if utils.is_main_process() and args.eval:
+        qualitative_limit = min(100, len(tgt_pres), len(tgt_refs), len(sample_names))
+        qualitative_results = [
+            {
+                "name": sample_names[i],
+                "prediction": tgt_pres[i],
+                "reference": tgt_refs[i],
+            }
+            for i in range(qualitative_limit)
+        ]
+        result_payload = {
+            "metrics": result_metrics,
+            "predictions": qualitative_results,
+        }
+        with open(args.output_dir + f'/{phase}_results.json', 'w') as f:
+            json.dump(result_payload, f, ensure_ascii=False, indent=4)
+
+    return result_metrics
 
 
 if __name__ == '__main__':
