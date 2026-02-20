@@ -504,6 +504,7 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
     with torch.no_grad():
         tgt_pres = []
         tgt_refs = []
+        sample_names = []
 
         for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, 10, header)):
             if target_dtype != None:
@@ -526,6 +527,7 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
             for i in range(len(output)):
                 tgt_pres.append(output[i])
                 tgt_refs.append(tgt_input['gt_sentence'][i])
+                sample_names.append(src_input['name_batch'][i])
 
     tokenizer = model_without_ddp.mt5_tokenizer
     padding_value = tokenizer.eos_token_id
@@ -535,6 +537,29 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
 
     tgt_pres = pad_sequence(tgt_pres, batch_first=True, padding_value=padding_value)
     tgt_pres = tokenizer.batch_decode(tgt_pres, skip_special_tokens=True)
+
+    if args.distributed and torch.distributed.is_initialized() and torch.distributed.get_world_size() > 1:
+        world_size = torch.distributed.get_world_size()
+        gathered_pres = [None for _ in range(world_size)]
+        gathered_refs = [None for _ in range(world_size)]
+        gathered_names = [None for _ in range(world_size)]
+        torch.distributed.all_gather_object(gathered_pres, tgt_pres)
+        torch.distributed.all_gather_object(gathered_refs, tgt_refs)
+        torch.distributed.all_gather_object(gathered_names, sample_names)
+
+        tgt_pres = [x for rank_list in gathered_pres for x in rank_list]
+        tgt_refs = [x for rank_list in gathered_refs for x in rank_list]
+        sample_names = [x for rank_list in gathered_names for x in rank_list]
+
+        # DistributedSampler with drop_last=False may pad by repeating some samples.
+        unique = {}
+        for name, pred, ref in zip(sample_names, tgt_pres, tgt_refs):
+            if name not in unique:
+                unique[name] = (pred, ref)
+        sorted_names = sorted(unique.keys())
+        tgt_pres = [unique[name][0] for name in sorted_names]
+        tgt_refs = [unique[name][1] for name in sorted_names]
+        sample_names = sorted_names
 
     # fix mt5 tokenizer bug
     if args.dataset == 'CSL_Daily' and args.task == "SLT":
