@@ -492,6 +492,14 @@ def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+def select_frame_indices(duration, max_length, phase):
+    if duration <= max_length:
+        return list(range(duration))
+    if phase == 'train':
+        return sorted(random.sample(range(duration), k=max_length))
+    # Deterministic, near-uniform coverage for dev/test.
+    return ((np.arange(max_length) * duration) // max_length).tolist()
+
 
 # build base dataset
 class Base_Dataset(Dataset.Dataset):
@@ -624,10 +632,7 @@ class S2T_Dataset(Base_Dataset):
             duration = len(pose['scores'])
             start = 0
 
-        if duration > self.max_length:
-            tmp = sorted(random.sample(range(duration), k=self.max_length))
-        else:
-            tmp = list(range(duration))
+        tmp = select_frame_indices(duration, self.max_length, self.phase)
 
         tmp = np.array(tmp) + start
 
@@ -748,10 +753,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
         duration = len(pose)
         start = 0
 
-        if duration > self.max_length:
-            tmp = sorted(random.sample(range(duration), k=self.max_length))
-        else:
-            tmp = list(range(duration))
+        tmp = select_frame_indices(duration, self.max_length, self.phase)
         tmp = np.array(tmp) + start
         skeletons = [pose[i] for i in tmp]
 
@@ -1021,10 +1023,7 @@ class S2T_Dataset_news(Base_Dataset):
 
         duration = len(pose['scores'])
 
-        if duration > self.max_length:
-            tmp = sorted(random.sample(range(duration), k=self.max_length))
-        else:
-            tmp = list(range(duration))
+        tmp = select_frame_indices(duration, self.max_length, self.phase)
 
         tmp = np.array(tmp)
 
