@@ -97,26 +97,19 @@ def load_part_kp_YTASL(skeletons, confs, normalization, layout):
                     hand_kp2d = np.stack([skeleton['pose_landmarks'][i] for i in pose_landmarks])
                     confidence = np.stack([conf['pose_landmarks'][i] for i in pose_landmarks])
                 elif layout == 'isharah':
-                    # TODO
-                    print('Isharah layout not implemented yet')
-                    raise NotImplementedError
+                    pose_landmarks = [0, 7, 8, 11, 12, 13, 14, 15, 16]
+                    hand_kp2d = np.stack([skeleton['pose_landmarks'][i] for i in pose_landmarks])
+                    confidence = np.stack([conf['pose_landmarks'][i] for i in pose_landmarks])
+
             elif part == 'left':
-                if layout in ['default', 'pruned']:
+                if layout in ['default', 'pruned', 'isharah']:
                     hand_kp2d = np.stack(skeleton['left_hand_landmarks'])
                     confidence = np.stack(conf['left_hand_landmarks'])
-                elif layout == 'isharah':
-                    # TODO
-                    print('Isharah layout not implemented yet')
-                    raise NotImplementedError
 
             elif part == 'right':
-                if layout in ['default', 'pruned']:
+                if layout in ['default', 'pruned', 'isharah']:
                     hand_kp2d = np.stack(skeleton['right_hand_landmarks'])
                     confidence = np.stack(conf['right_hand_landmarks'])
-                elif layout == 'isharah':
-                    # TODO
-                    print('Isharah layout not implemented yet')
-                    raise NotImplementedError
 
             elif part == 'face_all':
                 if layout == 'default':
@@ -132,9 +125,9 @@ def load_part_kp_YTASL(skeletons, confs, normalization, layout):
                     hand_kp2d = np.stack([skeleton['face_landmarks'][i] for i in face_landmarks])
                     confidence = np.stack([conf['face_landmarks'][i] for i in face_landmarks])
                 elif layout == 'isharah':
-                    # TODO
-                    print('Isharah layout not implemented yet')
-                    raise NotImplementedError
+                    face_landmarks = [0, 17, 37, 39, 40, 61, 84, 91, 146, 181, 185, 267, 269, 270, 291, 314, 321, 375, 405]
+                    hand_kp2d = np.stack([skeleton['face_landmarks'][i] for i in face_landmarks])
+                    confidence = np.stack([conf['face_landmarks'][i] for i in face_landmarks])
 
             else:
                 raise NotImplementedError

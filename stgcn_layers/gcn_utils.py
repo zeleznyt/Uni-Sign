@@ -100,7 +100,7 @@ class Graph:
             self.edge = self_link + neighbor_link
             self.center = self.num_node - 1
 
-        elif layout in ['default_ytasl_left', 'default_ytasl_right', 'pruned_ytasl_left', 'pruned_ytasl_right']:
+        elif layout in ['default_ytasl_left', 'default_ytasl_right', 'pruned_ytasl_left', 'pruned_ytasl_right', 'isharah_ytasl_left', 'isharah_ytasl_right']:
             self.num_node = 21
             self_link = [(i, i) for i in range(self.num_node)]
             neighbor_1base = [
@@ -205,7 +205,7 @@ class Graph:
             self.edge = self_link + neighbor_link
             self.center = self.num_node - 1
 
-        elif layout == 'pruned_ytasl_body':
+        elif layout in ['pruned_ytasl_body', 'isharah_ytasl_body']:
             self.num_node = 9
             self_link = [(i, i) for i in range(self.num_node)]
             neighbor_1base = [
@@ -240,6 +240,34 @@ class Graph:
                 [15, 10],
                 [7, 16],
                 [13, 17],
+            ]
+            neighbor_link = neighbor_1base
+            self.edge = self_link + neighbor_link
+            self.center = self.num_node - 1
+
+        elif layout == 'isharah_ytasl_face_all':
+            self.num_node = 19
+            self_link = [(i, i) for i in range(self.num_node)]
+            neighbor_1base = [
+                [0, 2],
+                [2, 3],
+                [3, 4],
+                [4, 10],
+                [10, 5],
+                [5, 8],
+                [8, 7],
+                [7, 9],
+                [9, 6],
+                [6, 1],
+                [1, 15],
+                [15, 18],
+                [18, 16],
+                [16, 17],
+                [17, 14],
+                [14, 13],
+                [13, 12],
+                [12, 11],
+                [11, 0],
             ]
             neighbor_link = neighbor_1base
             self.edge = self_link + neighbor_link
