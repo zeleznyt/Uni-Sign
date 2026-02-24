@@ -269,19 +269,34 @@ def sableu(references, hypotheses, tokenizer):
 
 def translation_performance(txt_ref, txt_hyp):
     from rouge import Rouge as SLT_Rouge
-    rouge=SLT_Rouge()
-    scores = rouge.get_scores(txt_hyp, txt_ref, avg=True)
-    scores['rouge-l']['f'] = scores['rouge-l']['f']*100
+    rouge = SLT_Rouge()
+
+    # The rouge package raises ValueError on empty hypothesis/reference strings.
+    # Keep eval robust by filtering invalid pairs for ROUGE only.
+    norm_hyp = [x.strip() if isinstance(x, str) else "" for x in txt_hyp]
+    norm_ref = [x.strip() if isinstance(x, str) else "" for x in txt_ref]
+    rouge_pairs = [(h, r) for h, r in zip(norm_hyp, norm_ref) if len(h) > 0 and len(r) > 0]
+
+    if len(rouge_pairs) > 0:
+        rouge_hyp = [h for h, _ in rouge_pairs]
+        rouge_ref = [r for _, r in rouge_pairs]
+        scores = rouge.get_scores(rouge_hyp, rouge_ref, avg=True)
+        rouge_l_f = scores['rouge-l']['f'] * 100
+    else:
+        rouge_l_f = 0.0
     
     tokenizer_args = '13a'
     # print('Signature: BLEU+case.mixed+numrefs.1+smooth.exp+tok.%s+version.1.4.2' % tokenizer_args)
-    sableu_dict = sableu(references=txt_ref, hypotheses=txt_hyp, tokenizer=tokenizer_args)
+    sableu_dict = sableu(references=norm_ref, hypotheses=norm_hyp, tokenizer=tokenizer_args)
     # print('BLEU', sableu_dict)
     # print('Signature: chrF2+case.mixed+numchars.6+numrefs.1+space.False+version.1.4.2')
     # print('Chrf', chrf(references=txt_ref, hypotheses=txt_hyp))
    
     print(sableu_dict)
-    print(f"Rough: {scores['rouge-l']['f']:.2f}")
+    empty_hyp_count = sum(1 for h in norm_hyp if len(h) == 0)
+    if empty_hyp_count > 0:
+        print(f"Warning: {empty_hyp_count} empty hypotheses encountered during evaluation.")
+    print(f"Rouge: {rouge_l_f:.2f}")
    
     # res = []
     # for n in range(4):
@@ -290,7 +305,7 @@ def translation_performance(txt_ref, txt_hyp):
     
     # print(" & ".join(res))
 
-    return sableu_dict, float(scores['rouge-l']['f'])
+    return sableu_dict, float(rouge_l_f)
 
 def islr_performance(txt_ref, txt_hyp):
     true_sample = 0
