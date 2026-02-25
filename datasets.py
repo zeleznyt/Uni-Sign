@@ -152,6 +152,106 @@ def load_part_kp_YTASL(skeletons, confs, normalization, layout):
     kps_with_scores = {k: torch.as_tensor(v, dtype=torch.float32) for k, v in kps_with_scores.items()}
     return kps_with_scores
 
+
+def load_part_kp_Isharah(skeletons, confs, normalization, layout):
+    # kps_with_scores = {}
+    kps_all_parts = {}
+    confs_all_parts = {}
+
+    for part in ['body', 'left', 'right', 'face_all']:
+        kps = []
+        confidences = []
+        for i, (skeleton, conf) in enumerate(zip(skeletons, confs)):
+
+            if part == 'body':
+                hand_kp2d = np.stack(skeleton['pose_landmarks'])
+                confidence = np.stack(conf['pose_landmarks'])
+
+            elif part == 'left':
+                hand_kp2d = np.stack(skeleton['left_hand_landmarks'])
+                confidence = np.stack(conf['left_hand_landmarks'])
+
+            elif part == 'right':
+                hand_kp2d = np.stack(skeleton['right_hand_landmarks'])
+                confidence = np.stack(conf['right_hand_landmarks'])
+
+            elif part == 'face_all':
+                hand_kp2d = np.stack(skeleton['face_landmarks'])
+                confidence = np.stack(conf['face_landmarks'])
+
+            else:
+                raise NotImplementedError
+            kps.append(hand_kp2d)
+            confidences.append(confidence)
+
+        kps = np.stack(kps, axis=0)
+        confidences = np.stack(confidences, axis=0)
+
+        kps_all_parts[part] = kps
+        confs_all_parts[part] = confidences[..., None]
+
+    if normalization == 'signspace':
+        normalized_kps = sign_space_normalization(kps_all_parts.copy(), layout=layout)
+    else:
+        normalized_kps = kps_all_parts
+
+    kps_with_scores = {}
+    for part in normalized_kps.keys():
+        kps_with_scores[part] = np.concatenate([normalized_kps[part], confs_all_parts[part]], axis=-1)
+
+    kps_with_scores = {k: torch.as_tensor(v, dtype=torch.float32) for k, v in kps_with_scores.items()}
+    return kps_with_scores
+
+
+YTASL_GROUP_SIZES = {
+    'pose_landmarks': 33,
+    'right_hand_landmarks': 21,
+    'left_hand_landmarks': 21,
+    'face_landmarks': 478,
+}
+
+YTASL_GROUP_ERROR_LABELS = {
+    'pose_landmarks': 'a pose group',
+    'right_hand_landmarks': 'a Rhand group',
+    'left_hand_landmarks': 'a Lhand group',
+    'face_landmarks': 'a face group',
+}
+
+ISHARAH_GROUP_SIZES = {
+    'pose_landmarks': 25,
+    'right_hand_landmarks': 21,
+    'left_hand_landmarks': 21,
+    'face_landmarks': 19,
+}
+
+
+def _fill_missing_landmarks(
+    skeleton,
+    conf,
+    group_name,
+    expected_size,
+    clip_name,
+    frame_idx,
+    error_group_label=None,
+    include_size_details=True,
+    strict_key_access=False,
+):
+    points = skeleton[group_name] if strict_key_access else skeleton.get(group_name, [])
+    if len(points) == 0:
+        conf[group_name] = [0] * expected_size
+        skeleton[group_name] = [[0.0, 0.0]] * expected_size
+    elif len(points) != expected_size:
+        group_label = error_group_label or f"group '{group_name}'"
+        if include_size_details:
+            raise NotImplementedError(
+                f"Unexpected number of keypoints in {group_label}: {clip_name}, frame {frame_idx}, "
+                f"expected {expected_size}, got {len(points)}"
+            )
+        raise NotImplementedError(f"Unexpected number of keypoints in {group_label}: {clip_name}, {frame_idx}")
+    else:
+        conf[group_name] = [1] * expected_size
+
+
 # load sub-pose
 def load_part_kp(skeletons, confs, force_ok=False):
     thr = 0.3
@@ -780,37 +880,18 @@ class S2T_Dataset_YTASL(Base_Dataset):
         confs = []
         for i, skeleton in enumerate(skeletons):
             conf = {}
-            if len(skeleton['pose_landmarks']) == 0:
-                conf['pose_landmarks'] = [0] * 33
-                skeleton['pose_landmarks'] = [[0.0, 0.0]] * 33
-            elif len(skeleton['pose_landmarks']) != 33:
-                raise NotImplementedError(f"Unexpected number of keypoints in a pose group: {clip_name}, {i}")
-            else:
-                conf['pose_landmarks'] = [1] * 33
-
-            if len(skeleton['right_hand_landmarks']) == 0:
-                conf['right_hand_landmarks'] = [0] * 21
-                skeleton['right_hand_landmarks'] = [[0.0, 0.0]] * 21
-            elif len(skeleton['right_hand_landmarks']) != 21:
-                raise NotImplementedError(f"Unexpected number of keypoints in a Rhand group: {clip_name}, {i}")
-            else:
-                conf['right_hand_landmarks'] = [1] * 21
-
-            if len(skeleton['left_hand_landmarks']) == 0:
-                conf['left_hand_landmarks'] = [0] * 21
-                skeleton['left_hand_landmarks'] = [[0.0, 0.0]] * 21
-            elif len(skeleton['left_hand_landmarks']) != 21:
-                raise NotImplementedError(f"Unexpected number of keypoints in a Lhand group: {clip_name}, {i}")
-            else:
-                conf['left_hand_landmarks'] = [1] * 21
-
-            if len(skeleton['face_landmarks']) == 0:
-                conf['face_landmarks'] = [0] * 478
-                skeleton['face_landmarks'] = [[0.0, 0.0]] * 478
-            elif len(skeleton['face_landmarks']) != 478:
-                raise NotImplementedError(f"Unexpected number of keypoints in a face group: {clip_name}, {i}")
-            else:
-                conf['face_landmarks'] = [1] * 478
+            for group_name, expected_size in YTASL_GROUP_SIZES.items():
+                _fill_missing_landmarks(
+                    skeleton=skeleton,
+                    conf=conf,
+                    group_name=group_name,
+                    expected_size=expected_size,
+                    clip_name=clip_name,
+                    frame_idx=i,
+                    error_group_label=YTASL_GROUP_ERROR_LABELS[group_name],
+                    include_size_details=False,
+                    strict_key_access=True,
+                )
 
             confs.append(conf)
 
@@ -822,6 +903,38 @@ class S2T_Dataset_YTASL(Base_Dataset):
 
     def __str__(self):
         return f'#total {len(self)}'
+
+
+class S2T_Dataset_Isharah(S2T_Dataset_YTASL):
+    def __init__(self, path, args, phase):
+        super(S2T_Dataset_Isharah, self).__init__(path=path, args=args, phase=phase)
+
+    def load_pose(self, clip_name):
+        path = os.path.join(self.pose_dir, f"{clip_name}.json")
+        pose_data = load_json(path)
+        pose = pose_data['cropped_keypoints']
+
+        duration = len(pose)
+        tmp = select_frame_indices(duration, self.max_length, self.phase)
+        tmp = np.array(tmp)
+        skeletons = [pose[i] for i in tmp]
+
+        confs = []
+        for i, skeleton in enumerate(skeletons):
+            conf = {}
+            for group_name, expected_size in ISHARAH_GROUP_SIZES.items():
+                _fill_missing_landmarks(
+                    skeleton=skeleton,
+                    conf=conf,
+                    group_name=group_name,
+                    expected_size=expected_size,
+                    clip_name=clip_name,
+                    frame_idx=i,
+                )
+            confs.append(conf)
+
+        kps_with_scores = load_part_kp_Isharah(skeletons, confs, self.normalization, self.layout)
+        return kps_with_scores
 
 
 # class S2T_Dataset_YTASL_h5(Base_Dataset):

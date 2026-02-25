@@ -81,7 +81,7 @@ class Uni_Sign(nn.Module):
         hidden_dim = args.hidden_dim
         self.proj_linear = nn.ModuleDict()
         for mode in self.modes:
-            graph_layout = f'{args.layout}_ytasl_{mode}' if "YTASL" in self.args.dataset else f'{args.layout}_{mode}'
+            graph_layout = f'{args.layout}_ytasl_{mode}' if self.args.dataset in ["YTASL", "Isharah"] else f'{args.layout}_{mode}'
             self.graph[mode] = Graph(layout=graph_layout, strategy='distance', max_hop=1)
             A.append(torch.tensor(self.graph[mode].A, dtype=torch.float32, requires_grad=False))
             self.proj_linear[mode] = nn.Linear(3, 64)
@@ -102,7 +102,9 @@ class Uni_Sign(nn.Module):
 
         self.apply(self._init_weights)
         
-        if "CSL" in self.args.dataset:
+        if self.args.dataset == "Isharah":
+            self.lang = 'Arabic'
+        elif "CSL" in self.args.dataset:
             self.lang = 'Chinese'
         else:
             self.lang = 'English'
@@ -403,4 +405,3 @@ def get_requires_grad_dict(model):
     params_to_update = {k: v for k, v in model.state_dict().items() if param_requires_grad.get(k, True)}
 
     return params_to_update
-

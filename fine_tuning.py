@@ -3,7 +3,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from models import Uni_Sign
 import utils as utils
-from datasets import S2T_Dataset, S2T_Dataset_YTASL
+from datasets import S2T_Dataset, S2T_Dataset_YTASL, S2T_Dataset_Isharah
 #S2T_Dataset_YTASL_h5
 import os
 import time
@@ -104,6 +104,9 @@ def main(args):
     if args.dataset == "YTASL":
         train_data = S2T_Dataset_YTASL(path=train_label_paths[args.dataset],
                                  args=args, phase='train')
+    elif args.dataset == "Isharah":
+        train_data = S2T_Dataset_Isharah(path=train_label_paths[args.dataset],
+                                 args=args, phase='train')
     else:
         train_data = S2T_Dataset(path=train_label_paths[args.dataset],
                                  args=args, phase='train')
@@ -157,6 +160,9 @@ def main(args):
     if args.dataset == "YTASL":
         dev_data = S2T_Dataset_YTASL(path=dev_label_paths[args.dataset],
                                  args=args, phase='dev')
+    elif args.dataset == "Isharah":
+        dev_data = S2T_Dataset_Isharah(path=dev_label_paths[args.dataset],
+                                 args=args, phase='dev')
     else:
         dev_data = S2T_Dataset(path=dev_label_paths[args.dataset],
                                  args=args, phase='dev')
@@ -180,6 +186,9 @@ def main(args):
 
     if args.dataset == "YTASL":
         test_data = S2T_Dataset_YTASL(path=test_label_paths[args.dataset],
+                                 args=args, phase='test')
+    elif args.dataset == "Isharah":
+        test_data = S2T_Dataset_Isharah(path=test_label_paths[args.dataset],
                                  args=args, phase='test')
     else:
         test_data = S2T_Dataset(path=test_label_paths[args.dataset],
