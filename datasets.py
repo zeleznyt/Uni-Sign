@@ -164,8 +164,9 @@ def load_part_kp_Isharah(skeletons, confs, normalization, layout):
         for i, (skeleton, conf) in enumerate(zip(skeletons, confs)):
 
             if part == 'body':
-                hand_kp2d = np.stack(skeleton['pose_landmarks'])
-                confidence = np.stack(conf['pose_landmarks'])
+                pose_landmarks = [0, 7, 8, 11, 12, 13, 14, 15, 16]
+                hand_kp2d = np.stack([skeleton['pose_landmarks'][i] for i in pose_landmarks])
+                confidence = np.stack([conf['pose_landmarks'][i] for i in pose_landmarks])
 
             elif part == 'left':
                 hand_kp2d = np.stack(skeleton['left_hand_landmarks'])
