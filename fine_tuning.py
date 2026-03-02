@@ -591,6 +591,14 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
         tgt_pres = [' '.join(list(r.replace(" ", '').replace("\n", ''))) for r in tgt_pres]
         tgt_refs = [' '.join(list(r.replace("，", ',').replace("？", "?").replace(" ", ''))) for r in tgt_refs]
 
+    if utils.is_main_process():
+        preview_n = min(5, len(tgt_pres), len(tgt_refs))
+        if preview_n > 0:
+            print(f"[eval-samples] showing {preview_n} ref/pred pairs")
+            for i in range(preview_n):
+                print(f"[sample {i+1}] REF: {tgt_refs[i]}")
+                print(f"[sample {i+1}] PRED: {tgt_pres[i]}")
+
     if args.task == "SLT":
         bleu_dict, rouge_score = translation_performance(tgt_refs, tgt_pres)
         for k, v in bleu_dict.items():
