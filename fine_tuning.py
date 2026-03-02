@@ -177,9 +177,10 @@ def main(args):
         )
     else:
         dev_sampler = torch.utils.data.SequentialSampler(dev_data)
+    eval_num_workers = 0 if args.zero_workers_for_eval else args.num_workers
     dev_dataloader = DataLoader(dev_data,
                                 batch_size=args.batch_size,
-                                num_workers=args.num_workers,
+                                num_workers=eval_num_workers,
                                 collate_fn=dev_data.collate_fn,
                                 sampler=dev_sampler,
                                 pin_memory=args.pin_mem)
@@ -206,7 +207,7 @@ def main(args):
         test_sampler = torch.utils.data.SequentialSampler(test_data)
     test_dataloader = DataLoader(test_data,
                                  batch_size=args.batch_size,
-                                 num_workers=args.num_workers,
+                                 num_workers=eval_num_workers,
                                  collate_fn=test_data.collate_fn,
                                  sampler=test_sampler,
                                  pin_memory=args.pin_mem)

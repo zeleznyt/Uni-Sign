@@ -526,6 +526,11 @@ def get_args_parser():
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
     parser.add_argument('--num_workers', default=8, type=int)
+    parser.add_argument(
+        '--zero_workers_for_eval',
+        action='store_true',
+        help='Force num_workers=0 for dev/test dataloaders.'
+    )
     parser.add_argument('--pin-mem', action='store_true',
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no-pin-mem', action='store_false', dest='pin_mem',
