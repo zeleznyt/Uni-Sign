@@ -701,11 +701,6 @@ class S2T_Dataset(Base_Dataset):
             raise NotImplementedError(f"dataset {self.args.dataset} not supported")
 
         self.list = list(self.raw_data.keys())
-        before = len(self.list)
-        self.list = [k for k in self.list if is_valid_metric_label(self.raw_data[k].get('text', ''))]
-        removed = before - len(self.list)
-        if removed > 0:
-            print(f"[dataset-filter] {phase}: removed {removed}/{before} samples with invalid labels")
 
         self.data_transform = transforms.Compose([
             transforms.ToTensor(),
@@ -792,22 +787,9 @@ class S2T_Dataset_YTASL(Base_Dataset):
             self.clip_order_from_int[video_id] = dict(zip(range(len(co)), co))
             self.clip_order_to_int[video_id] = dict(zip(co, range(len(co))))
 
-        total_candidates = 0
-        kept_samples = 0
         for video_id, clip_dict in self.annotation.items():
             for clip_name in clip_dict['clip_order']:
-                total_candidates += 1
-                translation = clip_dict[clip_name]['translation']
-                has_sentence = len([" ".join(_.split()) for _ in translation.split(".") if len(_) > 0]) > 0
-                if not has_sentence:
-                    continue
-                if not is_valid_metric_label(translation):
-                    continue
                 self.list_data.append((video_id, self.clip_order_to_int[video_id][clip_name]))
-                kept_samples += 1
-        removed = total_candidates - kept_samples
-        if removed > 0:
-            print(f"[dataset-filter] {phase}: removed {removed}/{total_candidates} samples with invalid labels")
 
         video_clips = set()
         for clip in os.listdir(self.pose_dir):
@@ -1099,11 +1081,6 @@ class S2T_Dataset_news(Base_Dataset):
 
         with path.open(encoding='utf-8') as f:
             self.annotation = json.load(f)
-        before = len(self.annotation)
-        self.annotation = [x for x in self.annotation if is_valid_metric_label(x.get("text", ""))]
-        removed = before - len(self.annotation)
-        if removed > 0:
-            print(f"[dataset-filter] {phase}: removed {removed}/{before} samples with invalid labels")
 
         if self.args.dataset == "CSL_News":
             self.pose_dir = pose_dirs[args.dataset]
