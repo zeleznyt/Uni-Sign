@@ -5,6 +5,10 @@ This module holds various MT evaluation metrics.
 
 from external_metrics import Rouge, sacrebleu, mscoco_rouge
 import numpy as np
+import json
+import os
+import re
+from datetime import datetime
 
 WER_COST_DEL = 3
 WER_COST_INS = 3
@@ -271,11 +275,14 @@ def translation_performance(txt_ref, txt_hyp):
     from rouge import Rouge as SLT_Rouge
     rouge = SLT_Rouge()
 
-    # The rouge package raises ValueError on empty hypothesis/reference strings.
-    # Keep eval robust by filtering invalid pairs for ROUGE only.
+    # The rouge package can fail on strings that become token-empty after its own preprocessing
+    # (e.g., punctuation/symbol-only). Keep this filtering only for ROUGE.
+    def _has_word_content(x):
+        return isinstance(x, str) and bool(re.search(r"\w", x.strip(), flags=re.UNICODE))
+
     norm_hyp = [x.strip() if isinstance(x, str) else "" for x in txt_hyp]
     norm_ref = [x.strip() if isinstance(x, str) else "" for x in txt_ref]
-    rouge_pairs = [(h, r) for h, r in zip(norm_hyp, norm_ref) if len(h) > 0 and len(r) > 0]
+    rouge_pairs = [(h, r) for h, r in zip(norm_hyp, norm_ref) if _has_word_content(h) and _has_word_content(r)]
 
     if len(rouge_pairs) > 0:
         rouge_hyp = [h for h, _ in rouge_pairs]
