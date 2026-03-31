@@ -791,13 +791,16 @@ class S2T_Dataset_YTASL(Base_Dataset):
             for clip_name in clip_dict['clip_order']:
                 self.list_data.append((video_id, self.clip_order_to_int[video_id][clip_name]))
 
+        available_clip_names = {
+            pathlib.Path(clip).stem  # remove suffix
+            for clip in os.listdir(self.pose_dir)
+            if clip.endswith(".json")
+        }
         video_clips = set()
-        for clip in os.listdir(self.pose_dir):
-            video_id, clip_id, _ = clip.split(".")
-            if video_id in self.clip_order_to_int:
-                clip_full_id = f'{video_id}.{clip_id}'
-                if clip_full_id in self.clip_order_to_int[video_id]:
-                    video_clips.add((video_id, self.clip_order_to_int[video_id][clip_full_id]))
+        for video_id, clip_dict in self.annotation.items():
+            for clip_name in clip_dict['clip_order']:
+                if clip_name in available_clip_names:
+                    video_clips.add((video_id, self.clip_order_to_int[video_id][clip_name]))
 
         self.remove_missing_annotation(video_clips)  # Remove data in annotations that are missing in h5 file
 
