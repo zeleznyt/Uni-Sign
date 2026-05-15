@@ -525,6 +525,16 @@ def get_args_parser():
                         help='path where to save, empty for no saving')
     parser.add_argument('--seed', default=42, type=int)
     parser.add_argument('--eval', action='store_true', help='Perform evaluation only')
+    parser.add_argument(
+        '--original_metric_implementation',
+        action='store_true',
+        help='Use the original Uni-Sign BLEU implementation instead of the sacrebleu implementation.'
+    )
+    parser.add_argument(
+        '--bleu_effective_order',
+        action='store_true',
+        help='Use sacrebleu effective order for the BLEU implementation.'
+    )
     parser.add_argument('--num_workers', default=8, type=int)
     parser.add_argument(
         '--zero_workers_for_eval',

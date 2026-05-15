@@ -271,7 +271,33 @@ def sableu(references, hypotheses, tokenizer):
         
     return scores
 
-def translation_performance(txt_ref, txt_hyp):
+def standardized_bleu(references, hypotheses, effective_order=False):
+    """
+    SacreBLEU implementation aligned with the T5_for_SLT project.
+    BLEU-1..4 are computed as BLEU scores with max_ngram_order=1..4, not
+    as the individual n-gram precisions from a single BLEU-4 calculation.
+    """
+    from sacrebleu.metrics import BLEU
+
+    scores = {}
+    for ngram_order in range(1, 5):
+        bleu_score = BLEU(
+            tokenize="13a",
+            smooth_method="exp",
+            effective_order=effective_order,
+            lowercase=False,
+            max_ngram_order=ngram_order,
+        ).corpus_score(hypotheses, [references])
+        scores["bleu" + str(ngram_order)] = bleu_score.score
+    return scores
+
+
+def translation_performance(
+    txt_ref,
+    txt_hyp,
+    original_metric_implementation=False,
+    bleu_effective_order=False,
+):
     from rouge import Rouge as SLT_Rouge
     rouge = SLT_Rouge()
 
@@ -292,9 +318,16 @@ def translation_performance(txt_ref, txt_hyp):
     else:
         rouge_l_f = 0.0
     
-    tokenizer_args = '13a'
-    # print('Signature: BLEU+case.mixed+numrefs.1+smooth.exp+tok.%s+version.1.4.2' % tokenizer_args)
-    sableu_dict = sableu(references=norm_ref, hypotheses=norm_hyp, tokenizer=tokenizer_args)
+    if original_metric_implementation:
+        tokenizer_args = '13a'
+        # print('Signature: BLEU+case.mixed+numrefs.1+smooth.exp+tok.%s+version.1.4.2' % tokenizer_args)
+        sableu_dict = sableu(references=norm_ref, hypotheses=norm_hyp, tokenizer=tokenizer_args)
+    else:
+        sableu_dict = standardized_bleu(
+            references=norm_ref,
+            hypotheses=norm_hyp,
+            effective_order=bleu_effective_order,
+        )
     # print('BLEU', sableu_dict)
     # print('Signature: chrF2+case.mixed+numchars.6+numrefs.1+space.False+version.1.4.2')
     # print('Chrf', chrf(references=txt_ref, hypotheses=txt_hyp))

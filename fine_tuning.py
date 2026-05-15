@@ -601,7 +601,12 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
                 print(f"[sample {i+1}] PRED: {tgt_pres[i]}")
 
     if args.task == "SLT":
-        bleu_dict, rouge_score = translation_performance(tgt_refs, tgt_pres)
+        bleu_dict, rouge_score = translation_performance(
+            tgt_refs,
+            tgt_pres,
+            original_metric_implementation=args.original_metric_implementation,
+            bleu_effective_order=args.bleu_effective_order,
+        )
         for k, v in bleu_dict.items():
             metric_logger.meters[k].update(v)
         metric_logger.meters['rouge'].update(rouge_score)
