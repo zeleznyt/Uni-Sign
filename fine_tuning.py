@@ -588,7 +588,7 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
         sample_names = sorted_names
 
     # fix mt5 tokenizer bug
-    if args.dataset == 'CSL_Daily' and args.task == "SLT":
+    if args.dataset == 'CSL_Daily' and args.task == "SLT" and args.original_metric_implementation:
         tgt_pres = [' '.join(list(r.replace(" ", '').replace("\n", ''))) for r in tgt_pres]
         tgt_refs = [' '.join(list(r.replace("，", ',').replace("？", "?").replace(" ", ''))) for r in tgt_refs]
 

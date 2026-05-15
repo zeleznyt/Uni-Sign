@@ -279,6 +279,12 @@ def standardized_bleu(references, hypotheses, effective_order=False):
     """
     from sacrebleu.metrics import BLEU
 
+    print(
+        "Standardized BLEU: "
+        "tokenize=13a, smooth_method=exp, lowercase=False, "
+        f"effective_order={effective_order}, max_ngram_order=1..4"
+    )
+
     scores = {}
     for ngram_order in range(1, 5):
         bleu_score = BLEU(
