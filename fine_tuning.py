@@ -408,7 +408,7 @@ def main(args):
                                 'model': get_requires_grad_dict(model_without_ddp),
                             }, checkpoint_path)
 
-                print(f"BLEU-4 of the network on the {len(dev_dataloader)} dev videos: {dev_stats['bleu4']:.2f}")
+                print(f"BLEU-4 of the network on the {len(dev_dataloader.dataset)} dev videos: {dev_stats['bleu4']:.2f}")
                 print(f'Max BLEU-4: {max_accuracy:.2f}%')
 
             elif args.task == "ISLR":
@@ -422,7 +422,7 @@ def main(args):
                             }, checkpoint_path)
 
                 print(
-                    f"PI accuracy of the network on the {len(dev_dataloader)} dev videos: {dev_stats['top1_acc_pi']:.2f}")
+                    f"PI accuracy of the network on the {len(dev_dataloader.dataset)} dev videos: {dev_stats['top1_acc_pi']:.2f}")
                 print(f'Max PI accuracy: {max_accuracy:.2f}%')
 
             elif args.task == "CSLR":
