@@ -298,37 +298,87 @@ def standardized_bleu(references, hypotheses, effective_order=False):
     return scores
 
 
+def standardized_rouge_l(references, hypotheses):
+    """
+    Standardized ROUGE-L F1 using google-research rouge_score.
+    Single-reference samples are scored directly. Multi-reference samples use
+    max-over-references per prediction, then mean over samples.
+    """
+    from rouge_score import rouge_scorer
+
+    print(
+        "Standardized ROUGE: "
+        "implementation=rouge_score, rouge_types=rougeL, use_stemmer=False, "
+        "aggregation=mean_over_samples, multi_reference=max_over_references, scale=0..100"
+    )
+
+    def has_word_content(text):
+        return isinstance(text, str) and bool(re.search(r"\w", text.strip(), flags=re.UNICODE))
+
+    # Normalize input shape to one list of references per prediction.
+    norm_hyp = [hyp.strip() if isinstance(hyp, str) else "" for hyp in hypotheses]
+    if len(references) == 0:
+        ref_groups = []
+    elif isinstance(references[0], (list, tuple)):
+        ref_groups = [[ref.strip() if isinstance(ref, str) else "" for ref in refs] for refs in references]
+    else:
+        ref_groups = [[ref.strip() if isinstance(ref, str) else ""] for ref in references]
+
+    if len(norm_hyp) != len(ref_groups):
+        raise ValueError(
+            f"ROUGE expects the same number of hypotheses and references, "
+            f"got {len(norm_hyp)} and {len(ref_groups)}."
+        )
+
+    scorer = rouge_scorer.RougeScorer(["rougeL"], use_stemmer=False)
+    sample_scores = []
+    for hyp, refs in zip(norm_hyp, ref_groups):
+        # Punctuation-only / emoji-only strings can break or distort ROUGE; score them as zero.
+        valid_refs = [ref for ref in refs if has_word_content(ref)]
+        if not has_word_content(hyp) or len(valid_refs) == 0:
+            sample_scores.append(0.0)
+            continue
+        # Multi-reference ROUGE uses the best matching reference for each prediction.
+        sample_scores.append(
+            max(scorer.score(target=ref, prediction=hyp)["rougeL"].fmeasure for ref in valid_refs)
+        )
+
+    return float(np.mean(sample_scores) * 100) if len(sample_scores) > 0 else 0.0
+
+
 def translation_performance(
     txt_ref,
     txt_hyp,
     original_metric_implementation=False,
     bleu_effective_order=False,
 ):
-    from rouge import Rouge as SLT_Rouge
-    rouge = SLT_Rouge()
-
-    # The rouge package can fail on strings that become token-empty after its own preprocessing
-    # (e.g., punctuation/symbol-only). Keep this filtering only for ROUGE.
-    def _has_word_content(x):
-        return isinstance(x, str) and bool(re.search(r"\w", x.strip(), flags=re.UNICODE))
-
     norm_hyp = [x.strip() if isinstance(x, str) else "" for x in txt_hyp]
     norm_ref = [x.strip() if isinstance(x, str) else "" for x in txt_ref]
-    rouge_pairs = [(h, r) for h, r in zip(norm_hyp, norm_ref) if _has_word_content(h) and _has_word_content(r)]
-
-    if len(rouge_pairs) > 0:
-        rouge_hyp = [h for h, _ in rouge_pairs]
-        rouge_ref = [r for _, r in rouge_pairs]
-        scores = rouge.get_scores(rouge_hyp, rouge_ref, avg=True)
-        rouge_l_f = scores['rouge-l']['f'] * 100
-    else:
-        rouge_l_f = 0.0
     
     if original_metric_implementation:
+        from rouge import Rouge as SLT_Rouge
+        rouge = SLT_Rouge()
+
+        # The rouge package can fail on strings that become token-empty after its own preprocessing
+        # (e.g., punctuation/symbol-only). Keep this filtering only for legacy ROUGE.
+        def _has_word_content(x):
+            return isinstance(x, str) and bool(re.search(r"\w", x.strip(), flags=re.UNICODE))
+
+        rouge_pairs = [(h, r) for h, r in zip(norm_hyp, norm_ref) if _has_word_content(h) and _has_word_content(r)]
+
+        if len(rouge_pairs) > 0:
+            rouge_hyp = [h for h, _ in rouge_pairs]
+            rouge_ref = [r for _, r in rouge_pairs]
+            scores = rouge.get_scores(rouge_hyp, rouge_ref, avg=True)
+            rouge_l_f = scores['rouge-l']['f'] * 100
+        else:
+            rouge_l_f = 0.0
+
         tokenizer_args = '13a'
         # print('Signature: BLEU+case.mixed+numrefs.1+smooth.exp+tok.%s+version.1.4.2' % tokenizer_args)
         sableu_dict = sableu(references=norm_ref, hypotheses=norm_hyp, tokenizer=tokenizer_args)
     else:
+        rouge_l_f = standardized_rouge_l(references=norm_ref, hypotheses=norm_hyp)
         sableu_dict = standardized_bleu(
             references=norm_ref,
             hypotheses=norm_hyp,
