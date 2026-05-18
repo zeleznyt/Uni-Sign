@@ -605,15 +605,36 @@ def select_frame_indices(duration, max_length, phase):
     return ((np.arange(max_length) * duration) // max_length).tolist()
 
 
+def get_translation_options(sample, primary_key='text'):
+    text = sample.get(primary_key, '')
+    options = [text]
+    paraphrases = sample.get('paraphrases', [])
+    if isinstance(paraphrases, str):
+        paraphrases = [paraphrases]
+    if paraphrases is None:
+        paraphrases = []
+    options.extend(paraphrases)
+    return [str(option) for option in options if option is not None]
+
+
 # build base dataset
 class Base_Dataset(Dataset.Dataset):
     def collate_fn(self, batch):
-        tgt_batch, src_length_batch, name_batch, pose_tmp, gloss_batch = [], [], [], [], []
+        tgt_batch, target_options_batch, src_length_batch, name_batch, pose_tmp, gloss_batch = [], [], [], [], [], []
 
-        for name_sample, pose_sample, text, gloss, _ in batch:
+        for name_sample, pose_sample, text, target_options, gloss, _ in batch:
             name_batch.append(name_sample)
             pose_tmp.append(pose_sample)
-            tgt_batch.append(text)
+            if (
+                self.phase == 'train'
+                and self.args.task == 'SLT'
+                and self.args.paraphrase_mode == 'random'
+                and len(target_options) > 0
+            ):
+                tgt_batch.append(random.choice(target_options))
+            else:
+                tgt_batch.append(text)
+            target_options_batch.append(target_options)
             gloss_batch.append(gloss)
 
         src_input = {}
@@ -650,7 +671,7 @@ class Base_Dataset(Dataset.Dataset):
 
         if self.rgb_support:
             support_rgb_dicts = {key: [] for key in batch[0][-1].keys()}
-            for _, _, _, _, support_rgb_dict in batch:
+            for _, _, _, _, _, support_rgb_dict in batch:
                 for key in support_rgb_dict.keys():
                     support_rgb_dicts[key].append(support_rgb_dict[key])
 
@@ -671,6 +692,7 @@ class Base_Dataset(Dataset.Dataset):
 
         tgt_input = {}
         tgt_input['gt_sentence'] = tgt_batch
+        tgt_input['gt_sentence_options'] = target_options_batch
         tgt_input['gt_gloss'] = gloss_batch
 
         return src_input, tgt_input
@@ -715,6 +737,7 @@ class S2T_Dataset(Base_Dataset):
         sample = self.raw_data[key]
 
         text = sample['text']
+        target_options = get_translation_options(sample, primary_key='text')
         if "gloss" in sample.keys():
             gloss = " ".join(sample['gloss'])
         else:
@@ -723,7 +746,7 @@ class S2T_Dataset(Base_Dataset):
         name_sample = sample['name']
         pose_sample, support_rgb_dict = self.load_pose(sample['video_path'])
 
-        return name_sample, pose_sample, text, gloss, support_rgb_dict
+        return name_sample, pose_sample, text, target_options, gloss, support_rgb_dict
 
     def load_pose(self, path):
         pose = pickle.load(open(os.path.join(self.pose_dir, path.replace(".mp4", '.pkl')), 'rb'))
@@ -816,6 +839,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
         # Get translation
         clip_dict = self.annotation[video_id][clip_name]
         text = clip_dict['translation']
+        target_options = get_translation_options(clip_dict, primary_key='translation')
 
         # Get the pose features
         pose_sample = self.load_pose(clip_name)
@@ -849,7 +873,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
         name_sample = clip_name
         gloss = ''
 
-        return name_sample, pose_sample, text, gloss, support_rgb_dict
+        return name_sample, pose_sample, text, target_options, gloss, support_rgb_dict
 
     def load_pose(self, clip_name):
         path = os.path.join(self.pose_dir, f"{clip_name}.json")
@@ -1115,6 +1139,7 @@ class S2T_Dataset_news(Base_Dataset):
             sample = self.annotation[self.start_idx:self.end_idx][index]
 
             text = sample['text']
+            target_options = get_translation_options(sample, primary_key='text')
             name_sample = sample['video']
 
             try:
@@ -1134,7 +1159,8 @@ class S2T_Dataset_news(Base_Dataset):
         else:
             raise RuntimeError(f"Failed to fetch video after {num_retries} retries.")
 
-        return name_sample, pose_sample, text, _, support_rgb_dict
+        gloss = ''
+        return name_sample, pose_sample, text, target_options, gloss, support_rgb_dict
 
     def load_pose(self, pose_name, rgb_name):
         pose = pickle.load(open(os.path.join(self.pose_dir, pose_name), 'rb'))

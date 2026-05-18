@@ -366,11 +366,11 @@ class Uni_Sign(nn.Module):
                     return_dict = True,
                     )
         
-        label = labels.reshape(-1)
         out_logits = out['logits']
         logits = out_logits.reshape(-1,out_logits.shape[-1])
+        label = labels.to(out_logits.device, non_blocking=True).reshape(-1)
         loss_fct = torch.nn.CrossEntropyLoss(label_smoothing=self.args.label_smoothing, ignore_index=-100)
-        loss = loss_fct(logits, label.to(out_logits.device, non_blocking=True))
+        loss = loss_fct(logits, label)
 
         stack_out = {
             # use for inference
@@ -378,6 +378,17 @@ class Uni_Sign(nn.Module):
             'attention_mask':attention_mask,
             'loss':loss,
         }
+
+        if tgt_input.get('return_per_sample_loss', False):
+            token_loss_fct = torch.nn.CrossEntropyLoss(
+                label_smoothing=self.args.label_smoothing,
+                ignore_index=-100,
+                reduction='none',
+            )
+            token_loss = token_loss_fct(logits, label).view(labels.shape[0], labels.shape[1])
+            valid_token_mask = labels.to(token_loss.device) != -100
+            per_sample_loss = token_loss.sum(dim=1) / valid_token_mask.sum(dim=1).clamp(min=1)
+            stack_out['per_sample_loss'] = per_sample_loss
 
         return stack_out
     

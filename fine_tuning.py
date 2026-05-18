@@ -463,6 +463,68 @@ def main(args):
         wandb.finish()
 
 
+def select_min_loss_paraphrases(model, src_input, tgt_input):
+    target_options_batch = tgt_input.get('gt_sentence_options', [])
+    fallback_targets = tgt_input['gt_sentence']
+    if len(target_options_batch) == 0:
+        return fallback_targets, 0, 0
+
+    normalized_options = []
+    for fallback, options in zip(fallback_targets, target_options_batch):
+        if not options:
+            normalized_options.append([fallback])
+        else:
+            normalized_options.append(options)
+
+    max_options = max(len(options) for options in normalized_options)
+    candidate_losses = None
+
+    with torch.no_grad():
+        for option_idx in range(max_options):
+            candidate_targets = []
+            valid_mask = []
+            for options in normalized_options:
+                if option_idx < len(options):
+                    candidate_targets.append(options[option_idx])
+                    valid_mask.append(True)
+                else:
+                    candidate_targets.append(options[0])
+                    valid_mask.append(False)
+
+            probe_tgt_input = dict(tgt_input)
+            probe_tgt_input['gt_sentence'] = candidate_targets
+            probe_tgt_input['return_per_sample_loss'] = True
+
+            per_sample_loss = model(src_input, probe_tgt_input)['per_sample_loss'].detach()
+            if candidate_losses is None:
+                candidate_losses = torch.full(
+                    (max_options, per_sample_loss.shape[0]),
+                    float('inf'),
+                    device=per_sample_loss.device,
+                    dtype=per_sample_loss.dtype,
+                )
+
+            valid_mask_tensor = torch.tensor(valid_mask, device=per_sample_loss.device, dtype=torch.bool)
+            candidate_losses[option_idx] = torch.where(
+                valid_mask_tensor,
+                per_sample_loss,
+                torch.full_like(per_sample_loss, float('inf')),
+            )
+
+    selected_option_indices = candidate_losses.argmin(dim=0).tolist()
+    selected_targets = [
+        normalized_options[sample_idx][option_idx]
+        for sample_idx, option_idx in enumerate(selected_option_indices)
+    ]
+    eligible_indices = [
+        sample_idx
+        for sample_idx, options in enumerate(normalized_options)
+        if len(options) > 1
+    ]
+    gt_selected_count = sum(1 for sample_idx in eligible_indices if selected_option_indices[sample_idx] == 0)
+    return selected_targets, gt_selected_count, len(eligible_indices)
+
+
 def train_one_epoch(args, model, data_loader, optimizer, epoch):
     model.train()
 
@@ -485,6 +547,21 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
 
         if args.task == "CSLR":
             tgt_input['gt_sentence'] = tgt_input['gt_gloss']
+
+        if args.task == "SLT" and args.paraphrase_mode == "min_loss":
+            selected_targets, gt_selected_count, eligible_count = select_min_loss_paraphrases(
+                model,
+                src_input,
+                tgt_input,
+            )
+            tgt_input = dict(tgt_input)
+            tgt_input['gt_sentence'] = selected_targets
+            if eligible_count > 0:
+                metric_logger.meters['paraphrase_gt_selected_pct'].update(
+                    gt_selected_count / eligible_count * 100,
+                    n=eligible_count,
+                )
+
         stack_out = model(src_input, tgt_input)
 
         total_loss = stack_out['loss']

@@ -603,6 +603,13 @@ def get_args_parser():
     # select task
     parser.add_argument("--task", default="SLT", choices=['SLT', "ISLR", "CSLR"])
 
+    parser.add_argument(
+        "--paraphrase_mode",
+        default="none",
+        choices=["none", "random", "min_loss"],
+        help="SLT training target selection: none=GT only, random=random GT/paraphrase, min_loss=backprop lowest-loss GT/paraphrase."
+    )
+
     # select label smooth
     parser.add_argument("--label_smoothing", default=0.2, type=float)
 
