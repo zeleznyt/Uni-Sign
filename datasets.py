@@ -617,6 +617,27 @@ def get_translation_options(sample, primary_key='text'):
     return [str(option) for option in options if option is not None]
 
 
+def report_paraphrase_stats(samples, primary_key, dataset_name, phase):
+    total = 0
+    with_paraphrases = 0
+    total_paraphrases = 0
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        total += 1
+        options = get_translation_options(sample, primary_key=primary_key)
+        n_paraphrases = max(len(options) - 1, 0)
+        if n_paraphrases > 0:
+            with_paraphrases += 1
+            total_paraphrases += n_paraphrases
+
+    print(
+        f"Paraphrase stats ({dataset_name}, {phase}): "
+        f"{with_paraphrases}/{total} samples with paraphrases, "
+        f"{total_paraphrases} total paraphrases."
+    )
+
+
 # build base dataset
 class Base_Dataset(Dataset.Dataset):
     def collate_fn(self, batch):
@@ -723,6 +744,12 @@ class S2T_Dataset(Base_Dataset):
             raise NotImplementedError(f"dataset {self.args.dataset} not supported")
 
         self.list = list(self.raw_data.keys())
+        report_paraphrase_stats(
+            self.raw_data.values(),
+            primary_key='text',
+            dataset_name=args.dataset,
+            phase=phase,
+        )
 
         self.data_transform = transforms.Compose([
             transforms.ToTensor(),
@@ -826,6 +853,17 @@ class S2T_Dataset_YTASL(Base_Dataset):
                     video_clips.add((video_id, self.clip_order_to_int[video_id][clip_name]))
 
         self.remove_missing_annotation(video_clips)  # Remove data in annotations that are missing in h5 file
+        clip_samples = [
+            clip_dict[clip_name]
+            for _, clip_dict in self.annotation.items()
+            for clip_name in clip_dict['clip_order']
+        ]
+        report_paraphrase_stats(
+            clip_samples,
+            primary_key='translation',
+            dataset_name=args.dataset,
+            phase=phase,
+        )
 
     def remove_missing_annotation(self, h5_video_clip):
         annotations_to_delete = set(self.list_data) - h5_video_clip
@@ -1127,6 +1165,12 @@ class S2T_Dataset_news(Base_Dataset):
         else:
             self.start_idx = int(sum_sample * 0.99)
             self.end_idx = int(sum_sample)
+        report_paraphrase_stats(
+            self.annotation[self.start_idx:self.end_idx],
+            primary_key='text',
+            dataset_name=args.dataset,
+            phase=phase,
+        )
 
     def __len__(self):
         return self.end_idx - self.start_idx
