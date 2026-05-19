@@ -298,6 +298,55 @@ def standardized_bleu(references, hypotheses, effective_order=False):
     return scores
 
 
+def standardized_bleu_report(references, hypotheses, effective_order=False):
+    """
+    SacreBLEU report with BLEU-1..4 and BLEU-4 precisions.
+    references can be either one reference per sample:
+        [ref_1, ref_2, ...]
+    or multiple references per sample:
+        [[ref_1a, ref_1b], [ref_2a], ...]
+    Missing references are padded with the sample's last reference, matching
+    sacrebleu's expected [num_refs x num_samples] corpus format.
+    """
+    from sacrebleu.metrics import BLEU
+
+    if len(references) == 0:
+        reference_streams = [[]]
+    elif isinstance(references[0], (list, tuple)):
+        ref_groups = [
+            [ref.strip() if isinstance(ref, str) else "" for ref in refs]
+            for refs in references
+        ]
+        ref_groups = [refs if len(refs) > 0 else [""] for refs in ref_groups]
+        max_refs = max(len(refs) for refs in ref_groups)
+        reference_streams = [
+            [refs[ref_idx] if ref_idx < len(refs) else refs[-1] for refs in ref_groups]
+            for ref_idx in range(max_refs)
+        ]
+    else:
+        reference_streams = [[ref.strip() if isinstance(ref, str) else "" for ref in references]]
+
+    norm_hyp = [hyp.strip() if isinstance(hyp, str) else "" for hyp in hypotheses]
+    bleu_scores = {}
+    bleu4 = None
+    for ngram_order in range(1, 5):
+        score = BLEU(
+            tokenize="13a",
+            smooth_method="exp",
+            effective_order=effective_order,
+            lowercase=False,
+            max_ngram_order=ngram_order,
+        ).corpus_score(norm_hyp, reference_streams)
+        bleu_scores[f"bleu-{ngram_order}"] = score.score
+        if ngram_order == 4:
+            bleu4 = score
+
+    for precision_idx, precision in enumerate(bleu4.precisions, start=1):
+        bleu_scores[f"bleu-{precision_idx}_precision"] = precision
+
+    return bleu_scores
+
+
 def standardized_rouge_l(references, hypotheses):
     """
     Standardized ROUGE-L F1 using google-research rouge_score.

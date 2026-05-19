@@ -15,7 +15,13 @@ import sys
 import random
 from timm.optim import create_optimizer
 from models import get_requires_grad_dict
-from SLRT_metrics import translation_performance, islr_performance, wer_list
+from SLRT_metrics import (
+    translation_performance,
+    islr_performance,
+    wer_list,
+    standardized_bleu_report,
+    standardized_rouge_l,
+)
 from transformers import get_scheduler
 from config import *
 import wandb
@@ -525,6 +531,33 @@ def select_min_loss_paraphrases(model, src_input, tgt_input):
     return selected_targets, gt_selected_count, len(eligible_indices)
 
 
+def build_slt_eval_report_metrics(args, predictions, canonical_refs, all_refs):
+    without_paraphrases = standardized_bleu_report(
+        references=canonical_refs,
+        hypotheses=predictions,
+        effective_order=args.bleu_effective_order,
+    )
+    without_paraphrases['rouge-L'] = standardized_rouge_l(
+        references=canonical_refs,
+        hypotheses=predictions,
+    )
+
+    with_paraphrases = standardized_bleu_report(
+        references=all_refs,
+        hypotheses=predictions,
+        effective_order=args.bleu_effective_order,
+    )
+    with_paraphrases['rouge-L'] = standardized_rouge_l(
+        references=all_refs,
+        hypotheses=predictions,
+    )
+
+    return {
+        "without_paraphrases": without_paraphrases,
+        "with_paraphrases": with_paraphrases,
+    }
+
+
 def train_one_epoch(args, model, data_loader, optimizer, epoch):
     model.train()
 
@@ -607,6 +640,7 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
     with torch.no_grad():
         tgt_pres = []
         tgt_refs = []
+        tgt_all_refs = []
         sample_names = []
 
         for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, 10, header)):
@@ -628,8 +662,14 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
                                                 )
 
             for i in range(len(output)):
+                canonical_ref = tgt_input['gt_sentence'][i]
                 tgt_pres.append(output[i])
-                tgt_refs.append(tgt_input['gt_sentence'][i])
+                tgt_refs.append(canonical_ref)
+                options = tgt_input.get('gt_sentence_options', [])
+                if args.task == "SLT" and len(options) > i and len(options[i]) > 0:
+                    tgt_all_refs.append(options[i])
+                else:
+                    tgt_all_refs.append([canonical_ref])
                 sample_names.append(src_input['name_batch'][i])
 
     tokenizer = model_without_ddp.mt5_tokenizer
@@ -645,29 +685,37 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
         world_size = torch.distributed.get_world_size()
         gathered_pres = [None for _ in range(world_size)]
         gathered_refs = [None for _ in range(world_size)]
+        gathered_all_refs = [None for _ in range(world_size)]
         gathered_names = [None for _ in range(world_size)]
         torch.distributed.all_gather_object(gathered_pres, tgt_pres)
         torch.distributed.all_gather_object(gathered_refs, tgt_refs)
+        torch.distributed.all_gather_object(gathered_all_refs, tgt_all_refs)
         torch.distributed.all_gather_object(gathered_names, sample_names)
 
         tgt_pres = [x for rank_list in gathered_pres for x in rank_list]
         tgt_refs = [x for rank_list in gathered_refs for x in rank_list]
+        tgt_all_refs = [x for rank_list in gathered_all_refs for x in rank_list]
         sample_names = [x for rank_list in gathered_names for x in rank_list]
 
         # DistributedSampler with drop_last=False may pad by repeating some samples.
         unique = {}
-        for name, pred, ref in zip(sample_names, tgt_pres, tgt_refs):
+        for name, pred, ref, refs in zip(sample_names, tgt_pres, tgt_refs, tgt_all_refs):
             if name not in unique:
-                unique[name] = (pred, ref)
+                unique[name] = (pred, ref, refs)
         sorted_names = sorted(unique.keys())
         tgt_pres = [unique[name][0] for name in sorted_names]
         tgt_refs = [unique[name][1] for name in sorted_names]
+        tgt_all_refs = [unique[name][2] for name in sorted_names]
         sample_names = sorted_names
 
     # fix mt5 tokenizer bug
     if args.dataset == 'CSL_Daily' and args.task == "SLT" and args.original_metric_implementation:
         tgt_pres = [' '.join(list(r.replace(" ", '').replace("\n", ''))) for r in tgt_pres]
         tgt_refs = [' '.join(list(r.replace("，", ',').replace("？", "?").replace(" ", ''))) for r in tgt_refs]
+        tgt_all_refs = [
+            [' '.join(list(r.replace("，", ',').replace("？", "?").replace(" ", ''))) for r in refs]
+            for refs in tgt_all_refs
+        ]
 
     if utils.is_main_process():
         preview_n = min(5, len(tgt_pres), len(tgt_refs))
@@ -705,17 +753,26 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
     result_metrics = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
     if utils.is_main_process() and args.eval:
-        qualitative_limit = min(100, len(tgt_pres), len(tgt_refs), len(sample_names))
+        qualitative_limit = min(len(tgt_pres), len(tgt_refs), len(tgt_all_refs), len(sample_names))
         qualitative_results = [
             {
                 "name": sample_names[i],
                 "prediction": tgt_pres[i],
                 "reference": tgt_refs[i],
+                "references": tgt_all_refs[i],
             }
             for i in range(qualitative_limit)
         ]
+        payload_metrics = result_metrics
+        if args.task == "SLT" and not args.original_metric_implementation:
+            payload_metrics = build_slt_eval_report_metrics(
+                args=args,
+                predictions=tgt_pres,
+                canonical_refs=tgt_refs,
+                all_refs=tgt_all_refs,
+            )
         result_payload = {
-            "metrics": result_metrics,
+            "metrics": payload_metrics,
             "predictions": qualitative_results,
         }
         with open(args.output_dir + f'/{phase}_results.json', 'w') as f:
