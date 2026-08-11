@@ -14,7 +14,11 @@ import pathlib
 import re
 from torchvision import transforms
 from config import rgb_dirs, pose_dirs
-from normalization import (local_keypoint_normalization, global_keypoint_normalization)
+from normalization import (
+    local_keypoint_normalization,
+    global_keypoint_normalization,
+    normalize_text,
+)
 
 
 def all_same(keypoints):
@@ -773,6 +777,11 @@ class S2T_Dataset_YTASL(Base_Dataset):
         self.annotation = load_json(path)
         self.rgb_support = self.args.rgb_support
         self.normalization = self.args.normalization
+        self.normalize_text = bool(
+            getattr(args, "normalize_text", False)
+            and args.dataset == "YTASL"
+            and phase in ("train", "dev")
+        )
         self.layout = args.layout
 
         self.pose_dir = pose_dirs[args.dataset]
@@ -816,6 +825,8 @@ class S2T_Dataset_YTASL(Base_Dataset):
         # Get translation
         clip_dict = self.annotation[video_id][clip_name]
         text = clip_dict['translation']
+        if self.normalize_text:
+            text = normalize_text(text)
 
         # Get the pose features
         pose_sample = self.load_pose(clip_name)

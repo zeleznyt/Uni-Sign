@@ -1,5 +1,51 @@
 import numpy as np
+import re
+import unicodedata
 from typing import Tuple
+
+
+QUOTE_TRANSLATION = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201a": "'",
+        "\u201b": "'",
+        "\u2032": "'",
+        "\u2035": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u201e": '"',
+        "\u201f": '"',
+        "\u2033": '"',
+        "\u2036": '"',
+    }
+)
+DASH_TRANSLATION = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2212": "-",
+    }
+)
+WHITESPACE_RE = re.compile(r"\s+")
+REPEATED_PUNCT_RE = re.compile(r"([!?.;,:\-])\1+")
+
+
+def normalize_text(text: str, *, remove_repeated_punctuation: bool = False) -> str:
+    """Normalize noisy spoken-language targets before tokenizer training/use."""
+
+    text = unicodedata.normalize("NFKC", text)
+    text = text.translate(QUOTE_TRANSLATION)
+    text = text.translate(DASH_TRANSLATION)
+    text = text.lower()
+    if remove_repeated_punctuation:
+        text = REPEATED_PUNCT_RE.sub(r"\1", text)
+    text = WHITESPACE_RE.sub(" ", text)
+    return text.strip()
 
 
 def get_keypoints(joints, landmarks_name):

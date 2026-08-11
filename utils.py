@@ -579,6 +579,11 @@ def get_args_parser():
 
     # Normalize method
     parser.add_argument("--normalization", default="none", choices=["none", "signspace"])
+    parser.add_argument(
+        "--normalize_text",
+        action="store_true",
+        help="Normalize YTASL train/dev target text. Test text and other datasets remain unchanged.",
+    )
 
     # Number of registers
     parser.add_argument("--n_registers", default=0, type=int)
