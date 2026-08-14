@@ -87,6 +87,34 @@ def get_system_job_id():
         return f"pbs{pbs_job_id}"
     return None
 
+
+def get_optimizer_step(model, fallback):
+    global_steps = getattr(model, "global_steps", None)
+    if callable(global_steps):
+        global_steps = global_steps()
+    if global_steps is None:
+        return int(fallback)
+    if isinstance(global_steps, torch.Tensor):
+        global_steps = global_steps.item()
+    return int(global_steps)
+
+
+def get_optimizer_steps_per_epoch(data_loader, gradient_accumulation_steps):
+    return math.ceil(len(data_loader) / gradient_accumulation_steps)
+
+
+def make_train_wandb_stats(train_stats):
+    log_stats = {}
+    for key, value in train_stats.items():
+        if key == "lr":
+            log_stats["train/lr_epoch_avg"] = value
+        elif key == "loss":
+            log_stats["train/loss_epoch_avg"] = value
+        else:
+            log_stats[f"train/{key}_epoch_avg"] = value
+    return log_stats
+
+
 def main(args):
     utils.init_distributed_mode_ds(args)
 
@@ -348,6 +376,10 @@ def main(args):
             name=base_run_name,
             **init_kwargs
         )
+        wandb.define_metric("train/optimizer_step")
+        wandb.define_metric("train/micro_step")
+        wandb.define_metric("train/*", step_metric="train/optimizer_step")
+        wandb.define_metric("dev/*", step_metric="train/optimizer_step")
 
     if args.eval:
         # Run eval on all ranks to keep DeepSpeed/NCCL collectives aligned.
@@ -361,6 +393,14 @@ def main(args):
 
         return
     print(f"Start training for {args.epochs} epochs")
+    optimizer_steps_per_epoch = get_optimizer_steps_per_epoch(train_dataloader, args.gradient_accumulation_steps)
+    if utils.is_main_process() and args.wandb and start_epoch == 0:
+        wandb.log({
+            "train/lr": optimizer.param_groups[0]["lr"],
+            "train/optimizer_step": 0,
+            "train/micro_step": 0,
+            "epoch": 0,
+        }, step=0)
 
     for epoch in range(start_epoch, args.epochs):
         epoch_start_time = time.time()
@@ -381,7 +421,9 @@ def main(args):
                 'cuda_rng_state': torch.cuda.get_rng_state_all(),
                 'numpy_rng_state': np.random.get_state(),
                 'random_rng_state': random.getstate(),
-                'global_step': (epoch + 1) * len(train_dataloader),
+                'global_step': get_optimizer_step(model, (epoch + 1) * optimizer_steps_per_epoch),
+                'optimizer_step': get_optimizer_step(model, (epoch + 1) * optimizer_steps_per_epoch),
+                'micro_step': (epoch + 1) * len(train_dataloader),
             }
             model.save_checkpoint(str(output_dir), tag=current_tag, client_state=ds_client_state)
             if args.distributed and torch.distributed.is_initialized():
@@ -438,14 +480,19 @@ def main(args):
                 print(f"WER of the network on the {len(dev_dataloader)} dev videos: {dev_stats['wer']:.2f}")
                 print(f'Min WER: {max_accuracy:.2f}%')
 
-            log_stats = {**{f'train/{k}': v for k, v in train_stats.items()},
+            optimizer_step = get_optimizer_step(model, (epoch + 1) * optimizer_steps_per_epoch)
+            micro_step = (epoch + 1) * len(train_dataloader)
+            log_stats = {**make_train_wandb_stats(train_stats),
                          **{f'dev/{k}': v for k, v in dev_stats.items()},
                          'epoch': epoch,
-                         'n_parameters': n_parameters}
+                         'n_parameters': n_parameters,
+                         'train/optimizer_step': optimizer_step,
+                         'train/micro_step': micro_step,
+                         'train/lr': optimizer.param_groups[0]["lr"]}
             epoch_elapsed = time.time() - epoch_start_time
             log_stats['train/epoch_elapsed_sec'] = epoch_elapsed
             if args.wandb:
-                wandb.log(log_stats, step=(epoch +1 ) * len(train_dataloader))
+                wandb.log(log_stats, step=optimizer_step)
 
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
@@ -471,6 +518,7 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
     print_freq = 10
     optimizer.zero_grad()
+    optimizer_steps_per_epoch = get_optimizer_steps_per_epoch(data_loader, args.gradient_accumulation_steps)
 
     target_dtype = None
     if model.bfloat16_enabled():
@@ -489,6 +537,10 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
 
         total_loss = stack_out['loss']
         model.backward(total_loss)
+        if hasattr(model, "is_gradient_accumulation_boundary"):
+            is_optimizer_update = model.is_gradient_accumulation_boundary()
+        else:
+            is_optimizer_update = (step + 1) % args.gradient_accumulation_steps == 0 or (step + 1) == len(data_loader)
         model.step()
 
         loss_value = total_loss.item()
@@ -499,16 +551,24 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
 
-        global_step = epoch * len(data_loader) + step
-        if utils.is_main_process() and args.wandb and global_step % args.log_step == 0:
+        micro_step = epoch * len(data_loader) + step + 1
+        optimizer_step_fallback = epoch * optimizer_steps_per_epoch + math.ceil((step + 1) / args.gradient_accumulation_steps)
+        optimizer_step = get_optimizer_step(model, optimizer_step_fallback)
+        should_log_step = is_optimizer_update and (optimizer_step == 1 or optimizer_step % args.log_step == 0)
+        if utils.is_main_process() and args.wandb and should_log_step:
             elapsed_time = time.time() - start_time
             log_dict = {
-                f"train/{name}": meter.global_avg
-                for name, meter in metric_logger.meters.items()
+                "train/loss": loss_value,
+                "train/loss_raw": loss_value,
+                "train/loss_epoch_avg": metric_logger.loss.global_avg,
+                "train/lr": metric_logger.lr.value,
+                "train/lr_epoch_avg": metric_logger.lr.global_avg,
+                "train/iter_time": elapsed_time,
+                "train/optimizer_step": optimizer_step,
+                "train/micro_step": micro_step,
+                "train/epoch_batch": step + 1,
             }
-            log_dict['train/loss_raw'] = loss_value
-            log_dict['train/iter_time'] = elapsed_time
-            wandb.log(log_dict, step=global_step)
+            wandb.log(log_dict, step=optimizer_step)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
