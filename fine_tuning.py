@@ -437,7 +437,7 @@ def main(args):
 
         # Evaluate on all ranks so DeepSpeed collective ops remain matched.
         dev_stats = evaluate(args, dev_dataloader, model, model_without_ddp, phase='dev')
-        # evaluate(args, test_dataloader, model, model_without_ddp, phase='test')
+        # evaluate(args, test_dataloader, model, model_without_ddp, phase='test', eval_header='Test evaluation:')
 
         if utils.is_main_process():
             if args.task == "SLT":
@@ -577,11 +577,10 @@ def train_one_epoch(args, model, data_loader, optimizer, epoch):
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def evaluate(args, data_loader, model, model_without_ddp, phase):
+def evaluate(args, data_loader, model, model_without_ddp, phase, eval_header='Evaluation:'):
     model.eval()
 
     metric_logger = utils.MetricLogger(delimiter="  ")
-    header = 'Test:'
 
     target_dtype = None
     if model.bfloat16_enabled():
@@ -592,7 +591,7 @@ def evaluate(args, data_loader, model, model_without_ddp, phase):
         tgt_refs = []
         sample_names = []
 
-        for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, 10, header)):
+        for step, (src_input, tgt_input) in enumerate(metric_logger.log_every(data_loader, 10, eval_header)):
             if target_dtype != None:
                 for key in src_input.keys():
                     if isinstance(src_input[key], torch.Tensor):
