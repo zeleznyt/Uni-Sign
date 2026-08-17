@@ -29,14 +29,7 @@ If our project helps you, please give us a star🌟 on GitHub, that would motiva
 [2025/6/5] Release lighter pose extraction and online inference implementation. Check it out [here](./demo/README.md) 🎊🎊. 
 
 ## 🛠️ Installation
-We suggest to create a new conda environment. 
-```bash
-# create environment
-conda create --name Uni-Sign python=3.9
-conda activate Uni-Sign
-# install other relevant dependencies
-pip install -r requirements.txt
-```
+We suggest creating a new conda environment. For current CUDA/ROCm/CPU setup commands, see [docs/ENVIRONMENT.md](./docs/ENVIRONMENT.md).
 
 ## 📖 Preparation
 Please follow the instructions provided in [DATASET.md](./docs/DATASET.md) for data preparation.
