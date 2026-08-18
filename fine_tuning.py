@@ -515,11 +515,11 @@ def main(args):
         if dev_dataloader is None and test_dataloader is None:
             raise ValueError("Eval requested, but both dev and test splits are null/missing.")
         # Run eval on all ranks to keep DeepSpeed/NCCL collectives aligned.
-        if args.task != "ISLR" and dev_dataloader is not None:
+        if dev_dataloader is not None:
             if utils.is_main_process():
                 print("📄 dev result")
             evaluate(args, dev_dataloader, model, model_without_ddp, phase='dev')
-        elif args.task != "ISLR" and utils.is_main_process():
+        elif utils.is_main_process():
             print("WARNING: dev split is null/missing; skipping dev evaluation.")
         if test_dataloader is not None:
             if utils.is_main_process():
