@@ -14,8 +14,10 @@ log/
 *.json
 !configs/
 !configs/*.json
+configs/ytasl_small.json
 *.xlsx
 *.mp4
 tools/*.jpg
 tools/*.mp4
 pre_training.py
+context.md

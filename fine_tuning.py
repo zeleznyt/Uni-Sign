@@ -127,18 +127,11 @@ def make_train_wandb_stats(train_stats):
 
 def apply_data_config_to_args(args, data_config):
     args.layout = data_config["layout"]
+    args.graph = data_config["graph"]
     args.target_language = data_config["target_language"]
+    args.dataset = f"config:{Path(args.data_config).stem}"
     if "normalization" in data_config:
         args.normalization = data_config["normalization"]
-
-    loaders = {
-        spec.get("loader")
-        for split in ("train", "dev", "test")
-        for spec in normalize_split_specs(data_config, split)
-    }
-    if loaders and loaders.issubset({"ytasl_json", "isharah_json"}):
-        # These local JSON loaders use the YTASL graph family in models.py.
-        args.dataset = "YTASL"
 
     if any(spec_rgb_config(spec) is not None for split in ("train", "dev", "test") for spec in normalize_split_specs(data_config, split)):
         args.rgb_support = False

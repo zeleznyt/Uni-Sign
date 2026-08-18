@@ -14,6 +14,8 @@ def load_data_config(path):
         raise ValueError("Data config root must be a JSON object.")
     if "layout" not in config:
         raise ValueError("Data config must define top-level 'layout'.")
+    if "graph" not in config:
+        raise ValueError("Data config must define top-level 'graph'.")
     if "target_language" not in config:
         raise ValueError("Data config must define top-level 'target_language'.")
 
@@ -67,6 +69,7 @@ def spec_rgb_config(spec):
 def preflight_data_config(config):
     report = {
         "layout": config.get("layout"),
+        "graph": config.get("graph"),
         "target_language": config.get("target_language"),
         "splits": [],
         "warnings": [],
@@ -138,6 +141,7 @@ def format_data_setup_report(report, dataset_summaries=None):
     lines = [
         "Data config setup:",
         f"  layout: {report.get('layout')}",
+        f"  graph: {report.get('graph')}",
         f"  target_language: {report.get('target_language')}",
     ]
 
