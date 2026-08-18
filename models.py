@@ -81,10 +81,8 @@ class Uni_Sign(nn.Module):
         hidden_dim = args.hidden_dim
         self.proj_linear = nn.ModuleDict()
         for mode in self.modes:
-            graph = getattr(args, "graph", None)
-            if graph is None:
-                graph_layout = f'{args.layout}_ytasl_{mode}' if self.args.dataset in ["YTASL", "Isharah"] else f'{args.layout}_{mode}'
-            elif graph == "ytasl":
+            graph = args.graph
+            if graph == "ytasl":
                 graph_layout = f'{args.layout}_ytasl_{mode}'
             elif graph in ["default", "original"]:
                 graph_layout = f'{args.layout}_{mode}'
@@ -110,14 +108,7 @@ class Uni_Sign(nn.Module):
 
         self.apply(self._init_weights)
         
-        if getattr(self.args, "target_language", None):
-            self.lang = self.args.target_language
-        elif self.args.dataset == "Isharah":
-            self.lang = 'Arabic'
-        elif "CSL" in self.args.dataset:
-            self.lang = 'Chinese'
-        else:
-            self.lang = 'English'
+        self.lang = self.args.target_language
         
         if self.args.rgb_support:
             self.rgb_support_backbone = torch.nn.Sequential(*list(torchvision.models.efficientnet_b0(pretrained=True).children())[:-2])

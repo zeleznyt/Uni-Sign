@@ -1,0 +1,26 @@
+{
+  "name": "ytasl_pretrain",
+  "layout": "pruned",
+  "graph": "ytasl",
+  "target_language": "English",
+  "normalization": "none",
+  "train": {
+    "name": "ytasl_train",
+    "loader": "ytasl_json",
+    "annotation_path": "data/YTASL/YT.annotations.train.json",
+    "pose_roots": [
+      "data/YTASL/raw_keypoints"
+    ],
+    "rgb": null
+  },
+  "dev": {
+    "name": "ytasl_dev",
+    "loader": "ytasl_json",
+    "annotation_path": "data/YTASL/YT.annotations.dev.json",
+    "pose_roots": [
+      "data/YTASL/raw_keypoints"
+    ],
+    "rgb": null
+  },
+  "test": null
+}

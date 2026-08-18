@@ -3,8 +3,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from models import Uni_Sign
 import utils as utils
-from datasets import Combined_Dataset, S2T_Dataset, S2T_Dataset_YTASL, S2T_Dataset_Isharah
-#S2T_Dataset_YTASL_h5
+from datasets import ConfiguredDataset, DistributedWeightedSampler
 import os
 import time
 import argparse, json, datetime
@@ -17,16 +16,12 @@ from timm.optim import create_optimizer
 from models import get_requires_grad_dict
 from SLRT_metrics import translation_performance, islr_performance, wer_list
 from transformers import get_scheduler
-from config import *
 from data_config import (
     format_data_setup_report,
     get_required_split_specs,
     load_data_config,
     normalize_split_specs,
     preflight_data_config,
-    spec_name,
-    spec_pose_roots,
-    spec_rgb_config,
 )
 import wandb
 import numpy as np
@@ -125,137 +120,75 @@ def make_train_wandb_stats(train_stats):
     return log_stats
 
 
-def apply_data_config_to_args(args, data_config):
+def apply_data_config_to_args(args, data_config, preflight_report):
     args.layout = data_config["layout"]
     args.graph = data_config["graph"]
     args.target_language = data_config["target_language"]
-    args.dataset = f"config:{Path(args.data_config).stem}"
-    if "normalization" in data_config:
-        args.normalization = data_config["normalization"]
-
-    if any(spec_rgb_config(spec) is not None for split in ("train", "dev", "test") for spec in normalize_split_specs(data_config, split)):
-        args.rgb_support = False
-
-
-def build_dataset_from_spec(spec, args, phase):
-    loader = spec.get("loader")
-    dataset_name = spec_name(spec)
-    annotation_path = spec.get("annotation_path")
-    pose_roots = spec_pose_roots(spec)
-    rgb = spec_rgb_config(spec)
-
-    if loader == "ytasl_json":
-        return S2T_Dataset_YTASL(
-            path=annotation_path,
-            args=args,
-            phase=phase,
-            pose_roots=pose_roots,
-            rgb=rgb,
-            dataset_name=dataset_name,
-            loader=loader,
-        )
-    if loader == "isharah_json":
-        return S2T_Dataset_Isharah(
-            path=annotation_path,
-            args=args,
-            phase=phase,
-            pose_roots=pose_roots,
-            rgb=rgb,
-            dataset_name=dataset_name,
-            loader=loader,
-        )
-    raise NotImplementedError(f"Data config loader '{loader}' is not implemented.")
+    args.normalization = data_config.get("normalization", "none")
+    args.metric_text_transform = data_config.get("metric_text_transform")
+    args.data_name = data_config.get("name") or Path(args.data_config).stem
+    args.rgb_support = preflight_report["rgb_enabled"]
 
 
 def build_split_dataset(specs, args, phase):
     if len(specs) == 0:
         return None
-
-    datasets = [build_dataset_from_spec(spec, args, phase) for spec in specs]
-    if len(datasets) == 1:
-        return datasets[0]
-
-    return Combined_Dataset(
-        datasets=datasets,
-        names=[spec_name(spec) for spec in specs],
-        weights=[spec.get("weight", 1.0) for spec in specs],
-        phase=phase,
-    )
-
-
-def get_dataset_setup_summaries(dataset):
-    if dataset is None:
-        return []
-    if hasattr(dataset, "get_setup_summaries"):
-        return dataset.get_setup_summaries()
-    if hasattr(dataset, "get_setup_summary"):
-        return [dataset.get_setup_summary()]
-    return []
-
-
-def make_legacy_dataset(args, phase):
-    if phase == "train":
-        label_paths = train_label_paths
-    elif phase == "dev":
-        label_paths = dev_label_paths
-    elif phase == "test":
-        label_paths = test_label_paths
-    else:
-        raise ValueError(f"Unknown phase: {phase}")
-
-    if args.dataset == "YTASL":
-        return S2T_Dataset_YTASL(path=label_paths[args.dataset], args=args, phase=phase)
-    if args.dataset == "Isharah":
-        return S2T_Dataset_Isharah(path=label_paths[args.dataset], args=args, phase=phase)
-    return S2T_Dataset(path=label_paths[args.dataset], args=args, phase=phase)
+    return ConfiguredDataset(specs=specs, args=args, phase=phase)
 
 
 def build_datasets(args):
-    data_setup_text = None
-    if not args.data_config:
-        if utils.is_main_process():
-            print("WARNING: using legacy --dataset path configuration. Prefer --data_config for new dataset runs.")
-        if args.dataset in ("YTASL", "Isharah") and args.rgb_support:
-            print(f"WARNING: RGB is not implemented for legacy {args.dataset} JSON loading; continuing pose-only.")
-            args.rgb_support = False
-        train_data = make_legacy_dataset(args, "train")
-        dev_data = make_legacy_dataset(args, "dev")
-        test_data = make_legacy_dataset(args, "test")
-        return train_data, dev_data, test_data, data_setup_text
-
     data_config = load_data_config(args.data_config)
-    apply_data_config_to_args(args, data_config)
-    preflight_report = preflight_data_config(data_config)
+    active_splits = ("dev", "test") if args.eval else ("train", "dev", "test")
+    preflight_report = preflight_data_config(
+        data_config,
+        active_splits=active_splits,
+    )
+    apply_data_config_to_args(args, data_config, preflight_report)
     if preflight_report["errors"]:
         print(format_data_setup_report(preflight_report))
-        raise FileNotFoundError("Data config contains missing required paths; see setup report above.")
+        raise ValueError("Data config validation failed; see setup report above.")
 
-    train_specs = get_required_split_specs(data_config, "train")
-    train_data = build_split_dataset(train_specs, args, "train")
-    dev_data = build_split_dataset(normalize_split_specs(data_config, "dev"), args, "dev")
-    test_data = build_split_dataset(normalize_split_specs(data_config, "test"), args, "test")
+    train_data = None
+    if not args.eval:
+        train_specs = get_required_split_specs(data_config, "train")
+        train_data = build_split_dataset(train_specs, args, "train")
+
+    dev_specs = normalize_split_specs(data_config, "dev")
+    test_specs = normalize_split_specs(data_config, "test")
+    if args.eval and len(dev_specs) == 0 and len(test_specs) == 0:
+        raise ValueError("Eval requested, but both dev and test splits are null/missing.")
+
+    dev_data = build_split_dataset(dev_specs, args, "dev")
+    test_data = build_split_dataset(test_specs, args, "test")
 
     summaries = {
-        "train": get_dataset_setup_summaries(train_data),
-        "dev": get_dataset_setup_summaries(dev_data),
-        "test": get_dataset_setup_summaries(test_data),
+        "train": train_data.get_setup_summaries() if train_data is not None else [],
+        "dev": dev_data.get_setup_summaries() if dev_data is not None else [],
+        "test": test_data.get_setup_summaries() if test_data is not None else [],
     }
-    data_setup_text = format_data_setup_report(preflight_report, summaries)
+    train_sampling = train_data.get_sampling_summary() if train_data is not None else None
+    data_setup_text = format_data_setup_report(
+        preflight_report,
+        summaries,
+        train_sampling=train_sampling,
+    )
     return train_data, dev_data, test_data, data_setup_text
 
 
 def make_train_sampler(args, train_data):
+    weights = train_data.sample_weights()
     if args.distributed:
-        if hasattr(train_data, "sample_weights"):
-            weights = train_data.sample_weights()
-            if any(weight != 1.0 for weight in weights):
-                print("WARNING: dataset balancing weights are ignored with DistributedSampler.")
+        if weights is not None:
+            return DistributedWeightedSampler(
+                weights,
+                num_replicas=utils.get_world_size(),
+                rank=utils.get_rank(),
+                seed=args.seed,
+            )
         return torch.utils.data.distributed.DistributedSampler(train_data, shuffle=True)
 
-    if hasattr(train_data, "sample_weights"):
-        weights = train_data.sample_weights()
-        if any(weight != 1.0 for weight in weights):
-            return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+    if weights is not None:
+        return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
     return torch.utils.data.RandomSampler(train_data)
 
 
@@ -283,7 +216,6 @@ def make_eval_dataloader(args, dataset, eval_num_workers):
 def main(args):
     utils.init_distributed_mode_ds(args)
 
-    print(args)
     utils.set_seed(args.seed)
 
     if args.finetune and args.resume:
@@ -295,7 +227,8 @@ def main(args):
     print(f"Creating dataset:")
 
     train_data, dev_data, test_data, data_setup_text = build_datasets(args)
-    if len(train_data) == 0:
+    print(args)
+    if train_data is not None and len(train_data) == 0:
         raise ValueError("Train split has zero usable samples after matching annotations to pose files.")
     if dev_data is not None and len(dev_data) == 0:
         print("WARNING: dev split has zero usable samples after matching annotations to pose files; treating it as missing.")
@@ -304,14 +237,17 @@ def main(args):
         print("WARNING: test split has zero usable samples after matching annotations to pose files; treating it as missing.")
         test_data = None
     print(train_data)
-    train_sampler = make_train_sampler(args, train_data)
-    train_dataloader = DataLoader(train_data,
-                                  batch_size=args.batch_size,
-                                  num_workers=args.num_workers,
-                                  collate_fn=train_data.collate_fn,
-                                  sampler=train_sampler,
-                                  pin_memory=args.pin_mem,
-                                  drop_last=True)
+    train_sampler = None
+    train_dataloader = None
+    if train_data is not None:
+        train_sampler = make_train_sampler(args, train_data)
+        train_dataloader = DataLoader(train_data,
+                                      batch_size=args.batch_size,
+                                      num_workers=args.num_workers,
+                                      collate_fn=train_data.collate_fn,
+                                      sampler=train_sampler,
+                                      pin_memory=args.pin_mem,
+                                      drop_last=True)
 
     # metric_logger = utils.MetricLogger(delimiter="  ")
     # metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
@@ -391,13 +327,16 @@ def main(args):
     n_parameters = utils.count_parameters_in_MB(model_without_ddp)
     print(f'number of params: {n_parameters}M')
 
-    optimizer = create_optimizer(args, model_without_ddp)
-    lr_scheduler = get_scheduler(
-        name='cosine',
-        optimizer=optimizer,
-        num_warmup_steps=int(args.warmup_epochs * len(train_dataloader) / args.gradient_accumulation_steps),
-        num_training_steps=int(args.epochs * len(train_dataloader) / args.gradient_accumulation_steps),
-    )
+    optimizer = None
+    lr_scheduler = None
+    if not args.eval:
+        optimizer = create_optimizer(args, model_without_ddp)
+        lr_scheduler = get_scheduler(
+            name='cosine',
+            optimizer=optimizer,
+            num_warmup_steps=int(args.warmup_epochs * len(train_dataloader) / args.gradient_accumulation_steps),
+            num_training_steps=int(args.epochs * len(train_dataloader) / args.gradient_accumulation_steps),
+        )
 
     for param in model.parameters(): param.data = param.data.contiguous()
     model, optimizer, lr_scheduler = utils.init_deepspeed(args, model, optimizer, lr_scheduler)
@@ -426,8 +365,8 @@ def main(args):
             load_dir,
             tag=load_tag,
             load_module_strict=True,
-            load_optimizer_states=True,
-            load_lr_scheduler_states=True,
+            load_optimizer_states=not args.eval,
+            load_lr_scheduler_states=not args.eval,
         )
         if load_path is None:
             raise RuntimeError(f"Failed to load DeepSpeed checkpoint from: {args.resume}")
@@ -446,7 +385,7 @@ def main(args):
             np.random.set_state(client_state['numpy_rng_state'])
         if 'random_rng_state' in client_state:
             random.setstate(client_state['random_rng_state'])
-        if start_epoch >= args.epochs:
+        if not args.eval and start_epoch >= args.epochs:
             print(f"Resume epoch {start_epoch} >= total epochs {args.epochs}; nothing to do.")
             return
 
@@ -481,7 +420,7 @@ def main(args):
         if wandb_run_id:
             init_kwargs["id"] = wandb_run_id
             init_kwargs["resume"] = "allow"
-        base_run_name = wandb_run_name or f"{os.path.basename(args.output_dir)}-{args.dataset}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        base_run_name = wandb_run_name or f"{os.path.basename(args.output_dir)}-{args.data_name}_{args.task}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
         system_job_id = get_system_job_id()
         args.system_job_id = system_job_id
         if system_job_id and system_job_id not in base_run_name:
@@ -777,7 +716,11 @@ def evaluate(args, data_loader, model, model_without_ddp, phase, eval_header='Ev
         sample_names = sorted_names
 
     # fix mt5 tokenizer bug
-    if args.dataset == 'CSL_Daily' and args.task == "SLT" and args.original_metric_implementation:
+    if (
+        args.metric_text_transform == "csl_daily_char"
+        and args.task == "SLT"
+        and args.original_metric_implementation
+    ):
         tgt_pres = [' '.join(list(r.replace(" ", '').replace("\n", ''))) for r in tgt_pres]
         tgt_refs = [' '.join(list(r.replace("，", ',').replace("？", "?").replace(" ", ''))) for r in tgt_refs]
 

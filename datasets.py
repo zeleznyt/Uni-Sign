@@ -1,5 +1,4 @@
 import torch
-import utils as utils
 import torch.utils.data.dataset as Dataset
 from torch.nn.utils.rnn import pad_sequence
 from PIL import Image
@@ -7,13 +6,15 @@ import os
 import random
 import numpy as np
 import copy
+import gzip
 import pickle
 from decord import VideoReader, cpu
 import json
 import pathlib
 import re
+from bisect import bisect_right
 from torchvision import transforms
-from config import rgb_dirs, pose_dirs
+from data_config import spec_name, spec_pose_roots, spec_rgb_config, spec_rgb_root
 from normalization import (
     local_keypoint_normalization,
     global_keypoint_normalization,
@@ -592,6 +593,11 @@ def load_json(path):
         return json.load(f)
 
 
+def load_gzip_pickle(path):
+    with gzip.open(path, "rb") as f:
+        return pickle.load(f)
+
+
 def index_pose_jsons(pose_roots):
     pose_index = {}
     duplicate_clips = []
@@ -614,13 +620,6 @@ def index_pose_jsons(pose_roots):
     return pose_index, duplicate_clips, root_json_counts
 
 
-def normalize_pose_roots(pose_roots):
-    if pose_roots is None:
-        return None
-    if isinstance(pose_roots, str):
-        return [pose_roots]
-    return list(pose_roots)
-
 def is_valid_metric_label(text):
     if text is None:
         return False
@@ -639,8 +638,106 @@ def select_frame_indices(duration, max_length, phase):
     return ((np.arange(max_length) * duration) // max_length).tolist()
 
 
-# build base dataset
-class Base_Dataset(Dataset.Dataset):
+# One configured dataset may contain one or more format-specific loaders.
+class ConfiguredDataset(Dataset.Dataset):
+    def __init__(self, specs, args, phase):
+        self.args = args
+        self.phase = phase
+        self.specs = list(specs)
+        self.loaders = [_build_loader(spec, args, phase) for spec in self.specs]
+        self.names = [spec_name(spec) for spec in self.specs]
+        self.weights = [float(spec.get("weight", 1.0)) for spec in self.specs]
+        self.uses_dataset_weights = any("weight" in spec for spec in self.specs)
+        self.rgb_support = bool(args.rgb_support)
+
+        self.cumulative_sizes = []
+        total = 0
+        for loader in self.loaders:
+            if bool(loader.rgb_support) != self.rgb_support:
+                raise ValueError(
+                    f"Loader '{loader.name}' RGB mode does not match the configured run-wide RGB mode."
+                )
+            total += len(loader)
+            self.cumulative_sizes.append(total)
+
+    def __len__(self):
+        return self.cumulative_sizes[-1] if self.cumulative_sizes else 0
+
+    def __getitem__(self, index):
+        if index < 0:
+            if -index > len(self):
+                raise ValueError("absolute value of index should not exceed dataset length")
+            index += len(self)
+        if index < 0 or index >= len(self):
+            raise IndexError("dataset index out of range")
+
+        loader_index = bisect_right(self.cumulative_sizes, index)
+        previous_size = 0 if loader_index == 0 else self.cumulative_sizes[loader_index - 1]
+        return self.loaders[loader_index].get_sample(index - previous_size)
+
+    def sample_weights(self):
+        if not self.uses_dataset_weights:
+            return None
+
+        sample_weights = []
+        for loader, dataset_weight in zip(self.loaders, self.weights):
+            if len(loader) == 0:
+                continue
+            per_sample_weight = dataset_weight / len(loader)
+            sample_weights.extend([per_sample_weight] * len(loader))
+        return sample_weights
+
+    def get_setup_summaries(self):
+        return [loader.get_setup_summary() for loader in self.loaders]
+
+    def get_sampling_summary(self):
+        source_sizes = [len(loader) for loader in self.loaders]
+        nominal_epoch_draws = sum(source_sizes)
+
+        if self.uses_dataset_weights:
+            total_weight = sum(
+                weight for weight, source_size in zip(self.weights, source_sizes)
+                if source_size > 0
+            )
+            shares = [
+                weight / total_weight if source_size > 0 else 0.0
+                for weight, source_size in zip(self.weights, source_sizes)
+            ]
+            mode = "dataset_weighted"
+            replacement = True
+        else:
+            shares = [
+                source_size / nominal_epoch_draws if nominal_epoch_draws > 0 else 0.0
+                for source_size in source_sizes
+            ]
+            mode = "concatenation"
+            replacement = False
+
+        datasets = []
+        for name, source_size, weight, share in zip(
+            self.names, source_sizes, self.weights, shares
+        ):
+            datasets.append({
+                "name": name,
+                "source_samples": source_size,
+                "configured_weight": weight if self.uses_dataset_weights else None,
+                "expected_share": share,
+                "expected_draws": nominal_epoch_draws * share,
+            })
+
+        return {
+            "mode": mode,
+            "replacement": replacement,
+            "nominal_epoch_draws": nominal_epoch_draws,
+            "datasets": datasets,
+        }
+
+    def __str__(self):
+        parts = ", ".join(
+            f"{name}: {len(loader)}" for name, loader in zip(self.names, self.loaders)
+        )
+        return f"#{self.phase} total {len(self)} ({parts})"
+
     def collate_fn(self, batch):
         tgt_batch, src_length_batch, name_batch, pose_tmp, gloss_batch = [], [], [], [], []
 
@@ -710,97 +807,76 @@ class Base_Dataset(Dataset.Dataset):
         return src_input, tgt_input
 
 
-class Combined_Dataset(Base_Dataset):
-    def __init__(self, datasets, names=None, weights=None, phase=None):
-        super(Combined_Dataset, self).__init__()
-        self.datasets = list(datasets)
-        self.names = names or [str(i) for i in range(len(self.datasets))]
-        self.weights = weights or [1.0 for _ in self.datasets]
-        self.phase = phase
-        self.rgb_support = any(getattr(dataset, "rgb_support", False) for dataset in self.datasets)
-        self.cumulative_sizes = []
-        total = 0
-        for dataset in self.datasets:
-            total += len(dataset)
-            self.cumulative_sizes.append(total)
+class DistributedWeightedSampler(torch.utils.data.Sampler):
+    def __init__(self, weights, num_replicas, rank, seed=0):
+        self.weights = torch.as_tensor(weights, dtype=torch.double)
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.seed = seed
+        self.epoch = 0
+        self.num_samples = (len(self.weights) + self.num_replicas - 1) // self.num_replicas
+        self.total_size = self.num_samples * self.num_replicas
+
+    def __iter__(self):
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+        indices = torch.multinomial(
+            self.weights,
+            self.total_size,
+            replacement=True,
+            generator=generator,
+        ).tolist()
+        return iter(indices[self.rank:self.total_size:self.num_replicas])
 
     def __len__(self):
-        return self.cumulative_sizes[-1] if self.cumulative_sizes else 0
+        return self.num_samples
 
-    def __getitem__(self, index):
-        if index < 0:
-            if -index > len(self):
-                raise ValueError("absolute value of index should not exceed dataset length")
-            index = len(self) + index
-        dataset_idx = 0
-        while index >= self.cumulative_sizes[dataset_idx]:
-            dataset_idx += 1
-        sample_idx = index
-        if dataset_idx > 0:
-            sample_idx = index - self.cumulative_sizes[dataset_idx - 1]
-        return self.datasets[dataset_idx][sample_idx]
-
-    def sample_weights(self):
-        weights = []
-        for dataset, weight in zip(self.datasets, self.weights):
-            weights.extend([float(weight)] * len(dataset))
-        return weights
-
-    def get_setup_summaries(self):
-        summaries = []
-        for dataset in self.datasets:
-            if hasattr(dataset, "get_setup_summary"):
-                summaries.append(dataset.get_setup_summary())
-        return summaries
-
-    def __str__(self):
-        parts = ", ".join(
-            f"{name}: {len(dataset)}" for name, dataset in zip(self.names, self.datasets)
-        )
-        return f"#total {len(self)} ({parts})"
+    def set_epoch(self, epoch):
+        self.epoch = epoch
 
 
-class S2T_Dataset(Base_Dataset):
-    def __init__(self, path, args, phase):
-        super(S2T_Dataset, self).__init__()
+def _resolve_file_from_roots(roots, relative_path):
+    candidates = [os.path.join(root, relative_path) for root in roots]
+    for candidate in candidates:
+        if os.path.isfile(candidate):
+            return candidate
+    return candidates[0]
+
+
+def _rgb_transform():
+    return transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ])
+
+
+class _OriginalPickleLoader:
+    def __init__(self, spec, args, phase):
         self.args = args
+        self.name = spec_name(spec)
+        self.loader = spec["loader"]
+        self.annotation_path = spec["annotation_path"]
+        self.pose_roots = spec_pose_roots(spec)
+        self.rgb_config = spec_rgb_config(spec)
+        self.rgb_root = spec_rgb_root(spec)
         self.rgb_support = self.args.rgb_support
         self.max_length = args.max_length
-        self.raw_data = utils.load_dataset_file(path)
+        self.raw_data = load_gzip_pickle(self.annotation_path)
         self.phase = phase
-
-        if self.args.dataset == "CSL_Daily":
-            self.pose_dir = pose_dirs[args.dataset]
-            self.rgb_dir = rgb_dirs[args.dataset]
-
-        elif "WLASL" in self.args.dataset:
-            self.pose_dir = os.path.join(pose_dirs[args.dataset], phase)
-            self.rgb_dir = os.path.join(rgb_dirs[args.dataset], phase)
-
-        elif self.args.dataset == "Isharah":
-            self.pose_dir = pose_dirs[args.dataset]  # pose only
-            self.rgb_dir = rgb_dirs[args.dataset]  # ""
-
-        else:
-            raise NotImplementedError(f"dataset {self.args.dataset} not supported")
-
         self.list = list(self.raw_data.keys())
-
-        self.data_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
+        self.data_transform = _rgb_transform()
 
     def __len__(self):
         return len(self.list)
 
-    def __getitem__(self, index):
+    def get_sample(self, index):
         key = self.list[index]
         sample = self.raw_data[key]
 
         text = sample['text']
         if "gloss" in sample.keys():
-            gloss = " ".join(sample['gloss'])
+            gloss_value = sample['gloss']
+            gloss = " ".join(gloss_value) if isinstance(gloss_value, list) else str(gloss_value)
         else:
             gloss = ''
 
@@ -810,7 +886,10 @@ class S2T_Dataset(Base_Dataset):
         return name_sample, pose_sample, text, gloss, support_rgb_dict
 
     def load_pose(self, path):
-        pose = pickle.load(open(os.path.join(self.pose_dir, path.replace(".mp4", '.pkl')), 'rb'))
+        pose_relative_path = path.replace(".mp4", ".pkl")
+        pose_path = _resolve_file_from_roots(self.pose_roots, pose_relative_path)
+        with open(pose_path, 'rb') as pose_file:
+            pose = pickle.load(pose_file)
 
         if 'start' in pose.keys():
             assert pose['start'] < pose['end']
@@ -839,35 +918,36 @@ class S2T_Dataset(Base_Dataset):
 
         support_rgb_dict = {}
         if self.rgb_support:
-            full_path = os.path.join(self.rgb_dir, path)
+            full_path = os.path.join(self.rgb_root, path)
             support_rgb_dict = load_support_rgb_dict(tmp, skeletons, confs, full_path, self.data_transform)
 
         return kps_with_scores, support_rgb_dict
 
-    def __str__(self):
-        return f'#total {len(self)}'
+    def get_setup_summary(self):
+        return {
+            "name": self.name,
+            "loader": self.loader,
+            "phase": self.phase,
+            "annotation_path": self.annotation_path,
+            "pose_roots": self.pose_roots,
+            "annotation_samples": len(self.raw_data),
+            "usable_samples": len(self),
+            "missing_pose_samples": None,
+            "missing_pose_examples": [],
+            "rgb": self.rgb_config,
+        }
 
 
-class S2T_Dataset_YTASL(Base_Dataset):
-    def __init__(
-        self,
-        path,
-        args,
-        phase,
-        pose_roots=None,
-        rgb=None,
-        dataset_name=None,
-        loader="ytasl_json",
-    ):
-        super(S2T_Dataset_YTASL, self).__init__()
+class _LocalJsonLoader:
+    def __init__(self, spec, args, phase):
         self.args = args
         self.max_length = args.max_length
         self.phase = phase
-        self.annotation_path = path
-        self.dataset_name = dataset_name or args.dataset
-        self.loader = loader
-        self.annotation = load_json(path)
-        self.rgb_config = rgb
+        self.annotation_path = spec["annotation_path"]
+        self.name = spec_name(spec)
+        self.loader = spec["loader"]
+        self.annotation = load_json(self.annotation_path)
+        self.rgb_config = spec_rgb_config(spec)
         self.rgb_support = False
         self.normalization = self.args.normalization
         self.normalize_text = bool(
@@ -877,50 +957,30 @@ class S2T_Dataset_YTASL(Base_Dataset):
         )
         self.layout = args.layout
 
-        pose_roots = normalize_pose_roots(pose_roots)
-        if pose_roots is None:
-            pose_roots = [pose_dirs[args.dataset]]
-        self.pose_roots = pose_roots
-        self.pose_dir = self.pose_roots[0] if len(self.pose_roots) > 0 else ""
-        self.rgb_dir = rgb_dirs[args.dataset] if args.dataset in rgb_dirs else ""
+        self.pose_roots = spec_pose_roots(spec)
 
-        self.list_data = []  # [(video_id, clip_id), ...]
-        self.clip_order_to_int = {}
-        self.clip_order_from_int = {}
+        self.list_data = []
 
-        for video_id in self.annotation.keys():
-            co = self.annotation[video_id]['clip_order']
-            self.clip_order_from_int[video_id] = dict(zip(range(len(co)), co))
-            self.clip_order_to_int[video_id] = dict(zip(co, range(len(co))))
-
-        for video_id, clip_dict in self.annotation.items():
-            for clip_name in clip_dict['clip_order']:
-                self.list_data.append((video_id, self.clip_order_to_int[video_id][clip_name]))
+        for video_id, video_data in self.annotation.items():
+            for clip_name in video_data['clip_order']:
+                self.list_data.append((video_id, clip_name))
 
         self.annotation_clip_count = len(self.list_data)
         self.pose_index, self.duplicate_pose_clips, self.root_json_counts = index_pose_jsons(self.pose_roots)
         available_clip_names = set(self.pose_index.keys())
-        video_clips = set()
+        available_samples = []
         missing_clip_names = []
-        for video_id, clip_dict in self.annotation.items():
-            for clip_name in clip_dict['clip_order']:
-                if clip_name in available_clip_names:
-                    video_clips.add((video_id, self.clip_order_to_int[video_id][clip_name]))
-                else:
-                    missing_clip_names.append(clip_name)
+        for video_id, clip_name in self.list_data:
+            if clip_name in available_clip_names:
+                available_samples.append((video_id, clip_name))
+            else:
+                missing_clip_names.append(clip_name)
 
         self.missing_clip_names = missing_clip_names
+        self.list_data = available_samples
 
-        self.remove_missing_annotation(video_clips)  # Remove data in annotations that are missing in h5 file
-
-    def remove_missing_annotation(self, h5_video_clip):
-        annotations_to_delete = set(self.list_data) - h5_video_clip
-        for a in annotations_to_delete:
-            self.list_data.remove(a)
-
-    def __getitem__(self, index):
-        video_id, clip_id = self.list_data[index]
-        clip_name = self.clip_order_from_int[video_id][clip_id]
+    def get_sample(self, index):
+        video_id, clip_name = self.list_data[index]
 
         # Get translation
         clip_dict = self.annotation[video_id][clip_name]
@@ -928,35 +988,8 @@ class S2T_Dataset_YTASL(Base_Dataset):
         if self.normalize_text:
             text = normalize_text(text)
 
-        # Get the pose features
         pose_sample = self.load_pose(clip_name)
-
-        # TODO: rgb support
-        video_path = ""
         support_rgb_dict = {}
-
-        # sample = {"name": clip_name,
-        #           "video_path": video_path,
-        #           "pose_features": pose_features,
-        #           "text": translation}
-        # Crop long sequences to desired max length. Random sample
-
-        # skeletons = pose['keypoints']
-        # confs = pose['scores']
-        # skeletons_tmp = []
-        # confs_tmp = []
-        # for index in tmp:
-        #     skeletons_tmp.append(skeletons[index])
-        #     confs_tmp.append(confs[index])
-        #
-        # skeletons = skeletons_tmp
-        # confs = confs_tmp
-
-        # confs = [np.ones(int(pose_features.shape[1]/2)) for _ in range(pose_features.shape[0])]
-        # confs = [np.ones(pose_features.shape[0])] * pose_features.shape[1]
-        # skeletons = [] # List of ndarrays (133,2) - full keypoints
-        # kps_with_scores = load_part_kp(skeletons, confs, force_ok=True)
-
         name_sample = clip_name
         gloss = ''
 
@@ -968,10 +1001,8 @@ class S2T_Dataset_YTASL(Base_Dataset):
         pose = pose_data['cropped_keypoints']
 
         duration = len(pose)
-        start = 0
-
         tmp = select_frame_indices(duration, self.max_length, self.phase)
-        tmp = np.array(tmp) + start
+        tmp = np.array(tmp)
         skeletons = [pose[i] for i in tmp]
 
         confs = []
@@ -998,19 +1029,16 @@ class S2T_Dataset_YTASL(Base_Dataset):
     def __len__(self):
         return len(self.list_data)
 
-    def __str__(self):
-        return f'#{self.dataset_name}/{self.phase} total {len(self)}'
-
     def get_setup_summary(self):
         return {
-            "name": self.dataset_name,
+            "name": self.name,
             "loader": self.loader,
             "phase": self.phase,
             "annotation_path": self.annotation_path,
             "pose_roots": self.pose_roots,
-            "annotation_clips": self.annotation_clip_count,
-            "usable_clips": len(self),
-            "missing_pose_clips": len(self.missing_clip_names),
+            "annotation_samples": self.annotation_clip_count,
+            "usable_samples": len(self),
+            "missing_pose_samples": len(self.missing_clip_names),
             "missing_pose_examples": self.missing_clip_names[:10],
             "duplicate_pose_clips": len(self.duplicate_pose_clips),
             "root_json_counts": self.root_json_counts,
@@ -1018,26 +1046,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
         }
 
 
-class S2T_Dataset_Isharah(S2T_Dataset_YTASL):
-    def __init__(
-        self,
-        path,
-        args,
-        phase,
-        pose_roots=None,
-        rgb=None,
-        dataset_name=None,
-        loader="isharah_json",
-    ):
-        super(S2T_Dataset_Isharah, self).__init__(
-            path=path,
-            args=args,
-            phase=phase,
-            pose_roots=pose_roots,
-            rgb=rgb,
-            dataset_name=dataset_name,
-            loader=loader,
-        )
+class _IsharahJsonLoader(_LocalJsonLoader):
 
     def load_pose(self, clip_name):
         path = self.pose_index[clip_name]
@@ -1067,179 +1076,26 @@ class S2T_Dataset_Isharah(S2T_Dataset_YTASL):
         return kps_with_scores
 
 
-# class S2T_Dataset_YTASL_h5(Base_Dataset):
-#     def __init__(self, path, args, phase):
-#         super(S2T_Dataset_YTASL_h5, self).__init__()
-#         self.args = args
-#         self.max_length = args.max_length
-#         self.phase = phase
-#         self.annotation = load_json(path)
-#         self.rgb_support = self.args.rgb_support
-#
-#         # Load poses
-#         self.list_data = []  # [(video_id, clip_id), ...]
-#         self.h5_data = {}
-#         self.h5shard = defaultdict(lambda: defaultdict(dict))
-#         self.clip_order_to_int = {}
-#         self.clip_order_from_int = {}
-#
-#         for video_id in self.annotation.keys():
-#             co = self.annotation[video_id]['clip_order']
-#             self.clip_order_from_int[video_id] = dict(zip(range(len(co)), co))
-#             self.clip_order_to_int[video_id] = dict(zip(co, range(len(co))))
-#
-#         for video_id, clip_dict in self.annotation.items():
-#             for clip_name in clip_dict:
-#                 if clip_name != "clip_order":
-#                     self.list_data.append((video_id, self.clip_order_to_int[video_id][clip_name]))
-#
-#         self.vf_path = os.path.join(pose_dirs["YTASL"], "YouTubeASL.keypoints.{}.json".format(phase))
-#
-#         h5_video_clip = self.read_multih5_json(self.vf_path)
-#         self.remove_missing_annotation(h5_video_clip)  # Remove data in annotations that are missing in h5 file
-#
-#     def read_multih5_json(self, json_filename):
-#         """Helper function for reading json specifications of multiple H5 files for visual features"""
-#         h5_video_clip = set()
-#         with open(json_filename, 'r') as F:
-#             self.h5shard = json.load(F)
-#         self.h5_data = {}
-#         print(f"Pose {self.phase} data are loaded from: ")
-#         for k in set(self.h5shard.values()):
-#             h5file = json_filename.replace('metadata_', '').replace('.json', ".%s.h5" % k)
-#             print("--" + h5file)  # ,k,json_filename,data_dir)
-#             self.h5_data[k] = h5py.File(h5file, 'r')
-#
-#             for vi in self.h5_data[k].keys():
-#                 for ci in self.h5_data[k][vi].keys():
-#                     if vi in self.clip_order_to_int:
-#                         if ci in self.clip_order_to_int[vi]:
-#                             clip_id = self.clip_order_to_int[vi][ci]
-#                             h5_video_clip.add((vi, clip_id))
-#         return h5_video_clip
-#
-#     def remove_missing_annotation(self, h5_video_clip):
-#         annotations_to_delete = set(self.list_data) - h5_video_clip
-#         for a in annotations_to_delete:
-#             self.list_data.remove(a)
-#
-#     def __getitem__(self, index):
-#         video_id, clip_id = self.list_data[index]
-#         clip_name = self.clip_order_from_int[video_id][clip_id]
-#
-#         # Get the pose features
-#         shard = self.h5shard[video_id]
-#         pose_features = torch.tensor(np.array(self.h5_data[shard][video_id][clip_name]))
-#
-#         # TODO: rgb support
-#         video_path = ""
-#
-#         # Get translation
-#         clip_dict = self.annotation[video_id][clip_name]
-#         translation = clip_dict['translation']
-#
-#         # sample = {"name": clip_name,
-#         #           "video_path": video_path,
-#         #           "pose_features": pose_features,
-#         #           "text": translation}
-#         #
-#         # # Crop long sequences to desired max length. Random sample
-#         # duration = len(pose_features) # TODO: works?
-#         # if duration > self.max_length:
-#         #     tmp = sorted(random.sample(range(duration), k=self.max_length))
-#         # else:
-#         #     tmp = list(range(duration))
-#         #
-#         # tmp = np.array(tmp)
-#
-#         # skeletons = pose['keypoints']
-#         # confs = pose['scores']
-#         # skeletons_tmp = []
-#         # confs_tmp = []
-#         # for index in tmp:
-#         #     skeletons_tmp.append(skeletons[index])
-#         #     confs_tmp.append(confs[index])
-#         #
-#         # skeletons = skeletons_tmp
-#         # confs = confs_tmp
-#
-#         # confs = [np.ones(int(pose_features.shape[1]/2)) for _ in range(pose_features.shape[0])]
-#         # confs = [np.ones(pose_features.shape[0])] * pose_features.shape[1]
-#         # skeletons = [] # List of ndarrays (133,2) - full keypoints
-#         # kps_with_scores = load_part_kp(skeletons, confs, force_ok=True)
-#
-#         # decoded = self.tokenizer(
-#         #     translation,
-#         #     max_length=self.max_token_length,
-#         #     padding="max_length",
-#         #     truncation=True,
-#         #     return_tensors="pt",
-#         # )
-#         # labels = decoded.input_ids
-#
-#         # Skip frames for the keypoints
-#         # if self.skip_frames:
-#         #     if type(self.skip_frames) == bool:
-#         #         for input_type in INPUT_TYPES:
-#         #             if visual_features[input_type] is not None:
-#         #                 visual_features[input_type] = visual_features[input_type][::2]
-#         #     elif type(self.skip_frames) == int:
-#         #         for input_type in INPUT_TYPES:
-#         #             if visual_features[input_type] is not None:
-#         #                 visual_features[input_type] = visual_features[input_type][::self.skip_frames]
-#         #
-#         # # Trim the keypoints to the max sequence length
-#         # if self.max_sequence_length:
-#         #     for input_type in INPUT_TYPES:
-#         #         if visual_features[input_type] is not None:
-#         #             visual_features[input_type] = visual_features[input_type][: self.max_sequence_length]
-#         #             seq_len = len(visual_features[input_type])
-#         #
-#         # assert seq_len, "No modality provided or clip has no length!"
-#         # attention_mask = torch.ones(seq_len)
-#         #
-#         # return {
-#         #     "sign_inputs": {'pose': visual_features['pose'],
-#         #                     'mae': visual_features['mae'],
-#         #                     'dino': visual_features['dino'],
-#         #                     'sign2vec': visual_features['sign2vec']},
-#         #     "sentence": translation,
-#         #     "labels": labels,
-#         #     "attention_mask": attention_mask,
-#         # }
-#         return kps
-#
-#     def __len__(self):
-#         return len(self.list_data)
-#
-#     def __str__(self):
-#         return f'#total {len(self)}'
-
-
-class S2T_Dataset_news(Base_Dataset):
-    def __init__(self, path, args, phase):
-        super(S2T_Dataset_news, self).__init__()
+class _CSLNewsLoader:
+    def __init__(self, spec, args, phase):
         self.args = args
+        self.name = spec_name(spec)
+        self.loader = spec["loader"]
+        self.annotation_path = spec["annotation_path"]
+        self.pose_roots = spec_pose_roots(spec)
+        self.rgb_config = spec_rgb_config(spec)
+        self.rgb_root = spec_rgb_root(spec)
         self.rgb_support = self.args.rgb_support
         self.phase = phase
         self.max_length = args.max_length
 
-        path = pathlib.Path(path)
+        path = pathlib.Path(self.annotation_path)
 
         with path.open(encoding='utf-8') as f:
             self.annotation = json.load(f)
 
-        if self.args.dataset == "CSL_News":
-            self.pose_dir = pose_dirs[args.dataset]
-            self.rgb_dir = rgb_dirs[args.dataset]
-
-        else:
-            raise NotImplementedError
         sum_sample = len(self.annotation)
-        self.data_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-        ])
+        self.data_transform = _rgb_transform()
 
         if phase == 'train':
             self.start_idx = int(sum_sample * 0.0)
@@ -1251,12 +1107,12 @@ class S2T_Dataset_news(Base_Dataset):
     def __len__(self):
         return self.end_idx - self.start_idx
 
-    def __getitem__(self, index):
+    def get_sample(self, index):
         num_retries = 10
 
         # skip some invalid video sample
         for _ in range(num_retries):
-            sample = self.annotation[self.start_idx:self.end_idx][index]
+            sample = self.annotation[self.start_idx + index]
 
             text = sample['text']
             name_sample = sample['video']
@@ -1264,7 +1120,7 @@ class S2T_Dataset_news(Base_Dataset):
             try:
                 pose_sample, support_rgb_dict = self.load_pose(sample['pose'], sample['video'])
 
-            except:
+            except Exception:
                 import traceback
 
                 traceback.print_exc()
@@ -1278,11 +1134,13 @@ class S2T_Dataset_news(Base_Dataset):
         else:
             raise RuntimeError(f"Failed to fetch video after {num_retries} retries.")
 
-        return name_sample, pose_sample, text, _, support_rgb_dict
+        return name_sample, pose_sample, text, '', support_rgb_dict
 
     def load_pose(self, pose_name, rgb_name):
-        pose = pickle.load(open(os.path.join(self.pose_dir, pose_name), 'rb'))
-        full_path = os.path.join(self.rgb_dir, rgb_name)
+        pose_path = _resolve_file_from_roots(self.pose_roots, pose_name)
+        with open(pose_path, 'rb') as pose_file:
+            pose = pickle.load(pose_file)
+        full_path = os.path.join(self.rgb_root, rgb_name) if self.rgb_support else None
 
         duration = len(pose['scores'])
 
@@ -1314,5 +1172,29 @@ class S2T_Dataset_news(Base_Dataset):
 
         return kps_with_scores, support_rgb_dict
 
-    def __str__(self):
-        return f'#total {len(self)}'
+    def get_setup_summary(self):
+        return {
+            "name": self.name,
+            "loader": self.loader,
+            "phase": self.phase,
+            "annotation_path": self.annotation_path,
+            "pose_roots": self.pose_roots,
+            "annotation_samples": len(self.annotation),
+            "usable_samples": len(self),
+            "missing_pose_samples": None,
+            "missing_pose_examples": [],
+            "rgb": self.rgb_config,
+        }
+
+
+def _build_loader(spec, args, phase):
+    loader_name = spec["loader"]
+    if loader_name == "ytasl_json":
+        return _LocalJsonLoader(spec, args, phase)
+    if loader_name == "isharah_json":
+        return _IsharahJsonLoader(spec, args, phase)
+    if loader_name == "original_pickle":
+        return _OriginalPickleLoader(spec, args, phase)
+    if loader_name == "csl_news":
+        return _CSLNewsLoader(spec, args, phase)
+    raise NotImplementedError(f"Data config loader '{loader_name}' is not implemented.")

@@ -570,21 +570,16 @@ def get_args_parser():
                         default=0,
                         help='save ckpt per quick_break step')
     
-    # RGB branch
-    parser.add_argument('--rgb_support', action='store_true',)
-
     # Data config
     parser.add_argument(
         "--data_config",
-        default="",
-        help="Path to a JSON data config. When set, dataset paths and target language are loaded from this file.",
+        required=True,
+        help="Path to the JSON data config used for all dataset, graph, layout, and target-language settings.",
     )
     
     # Pose length
     parser.add_argument("--max_length", default=256, type=int)
 
-    # Normalize method
-    parser.add_argument("--normalization", default="none", choices=["none", "signspace"])
     parser.add_argument(
         "--normalize_text",
         action="store_true",
@@ -604,12 +599,6 @@ def get_args_parser():
 
     # Adaptive GCN
     parser.add_argument("--no_adaptive_gcn", action='store_true',)
-
-    # select dataset
-    parser.add_argument("--dataset", default="CSL_Daily", choices=['CSL_News', "CSL_Daily", "WLASL", "Isharah", "YTASL"])
-
-    # keypoint layout
-    parser.add_argument("--layout", default="default", choices=['default', "pruned", "isharah"])
 
     # select task
     parser.add_argument("--task", default="SLT", choices=['SLT', "ISLR", "CSLR"])

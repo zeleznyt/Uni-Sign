@@ -15,6 +15,7 @@ log/
 !configs/
 !configs/*.json
 configs/ytasl_small.json
+configs/cluster_debug_mixed_ytasl_h2s.json
 *.xlsx
 *.mp4
 tools/*.jpg

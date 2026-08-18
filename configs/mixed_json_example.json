@@ -1,0 +1,47 @@
+{
+  "name": "mixed_local_json_example",
+  "layout": "pruned",
+  "graph": "ytasl",
+  "target_language": "English",
+  "normalization": "none",
+  "train": [
+    {
+      "name": "how2sign_train",
+      "loader": "ytasl_json",
+      "annotation_path": "data/how2sign/annotations.train.json",
+      "pose_roots": [
+        "data/how2sign/raw_keypoints"
+      ],
+      "rgb": null,
+      "weight": 2.0
+    },
+    {
+      "name": "phoenix_train",
+      "loader": "ytasl_json",
+      "annotation_path": "data/phoenix/annotations.train.json",
+      "pose_roots": [
+        "data/phoenix/raw_keypoints"
+      ],
+      "rgb": null,
+      "weight": 1.0
+    }
+  ],
+  "dev": {
+    "name": "how2sign_dev",
+    "loader": "ytasl_json",
+    "annotation_path": "data/how2sign/annotations.dev.json",
+    "pose_roots": [
+      "data/how2sign/raw_keypoints"
+    ],
+    "rgb": null
+  },
+  "test": {
+    "name": "how2sign_test",
+    "loader": "ytasl_json",
+    "annotation_path": "data/how2sign/annotations.test.json",
+    "pose_roots": [
+      "data/how2sign/raw_keypoints"
+    ],
+    "rgb": null
+  }
+}
