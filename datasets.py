@@ -591,6 +591,36 @@ def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
+
+def index_pose_jsons(pose_roots):
+    pose_index = {}
+    duplicate_clips = []
+    root_json_counts = []
+    for pose_root in pose_roots:
+        if not os.path.isdir(pose_root):
+            root_json_counts.append((pose_root, 0))
+            continue
+        json_files = [
+            filename for filename in os.listdir(pose_root)
+            if filename.endswith(".json")
+        ]
+        root_json_counts.append((pose_root, len(json_files)))
+        for filename in json_files:
+            clip_name = pathlib.Path(filename).stem
+            if clip_name in pose_index:
+                duplicate_clips.append(clip_name)
+                continue
+            pose_index[clip_name] = os.path.join(pose_root, filename)
+    return pose_index, duplicate_clips, root_json_counts
+
+
+def normalize_pose_roots(pose_roots):
+    if pose_roots is None:
+        return None
+    if isinstance(pose_roots, str):
+        return [pose_roots]
+    return list(pose_roots)
+
 def is_valid_metric_label(text):
     if text is None:
         return False
@@ -678,6 +708,56 @@ class Base_Dataset(Dataset.Dataset):
         tgt_input['gt_gloss'] = gloss_batch
 
         return src_input, tgt_input
+
+
+class Combined_Dataset(Base_Dataset):
+    def __init__(self, datasets, names=None, weights=None, phase=None):
+        super(Combined_Dataset, self).__init__()
+        self.datasets = list(datasets)
+        self.names = names or [str(i) for i in range(len(self.datasets))]
+        self.weights = weights or [1.0 for _ in self.datasets]
+        self.phase = phase
+        self.rgb_support = any(getattr(dataset, "rgb_support", False) for dataset in self.datasets)
+        self.cumulative_sizes = []
+        total = 0
+        for dataset in self.datasets:
+            total += len(dataset)
+            self.cumulative_sizes.append(total)
+
+    def __len__(self):
+        return self.cumulative_sizes[-1] if self.cumulative_sizes else 0
+
+    def __getitem__(self, index):
+        if index < 0:
+            if -index > len(self):
+                raise ValueError("absolute value of index should not exceed dataset length")
+            index = len(self) + index
+        dataset_idx = 0
+        while index >= self.cumulative_sizes[dataset_idx]:
+            dataset_idx += 1
+        sample_idx = index
+        if dataset_idx > 0:
+            sample_idx = index - self.cumulative_sizes[dataset_idx - 1]
+        return self.datasets[dataset_idx][sample_idx]
+
+    def sample_weights(self):
+        weights = []
+        for dataset, weight in zip(self.datasets, self.weights):
+            weights.extend([float(weight)] * len(dataset))
+        return weights
+
+    def get_setup_summaries(self):
+        summaries = []
+        for dataset in self.datasets:
+            if hasattr(dataset, "get_setup_summary"):
+                summaries.append(dataset.get_setup_summary())
+        return summaries
+
+    def __str__(self):
+        parts = ", ".join(
+            f"{name}: {len(dataset)}" for name, dataset in zip(self.names, self.datasets)
+        )
+        return f"#total {len(self)} ({parts})"
 
 
 class S2T_Dataset(Base_Dataset):
@@ -769,23 +849,40 @@ class S2T_Dataset(Base_Dataset):
 
 
 class S2T_Dataset_YTASL(Base_Dataset):
-    def __init__(self, path, args, phase):
+    def __init__(
+        self,
+        path,
+        args,
+        phase,
+        pose_roots=None,
+        rgb=None,
+        dataset_name=None,
+        loader="ytasl_json",
+    ):
         super(S2T_Dataset_YTASL, self).__init__()
         self.args = args
         self.max_length = args.max_length
         self.phase = phase
+        self.annotation_path = path
+        self.dataset_name = dataset_name or args.dataset
+        self.loader = loader
         self.annotation = load_json(path)
-        self.rgb_support = self.args.rgb_support
+        self.rgb_config = rgb
+        self.rgb_support = False
         self.normalization = self.args.normalization
         self.normalize_text = bool(
             getattr(args, "normalize_text", False)
-            and args.dataset == "YTASL"
+            and self.loader == "ytasl_json"
             and phase in ("train", "dev")
         )
         self.layout = args.layout
 
-        self.pose_dir = pose_dirs[args.dataset]
-        self.rgb_dir = rgb_dirs[args.dataset]
+        pose_roots = normalize_pose_roots(pose_roots)
+        if pose_roots is None:
+            pose_roots = [pose_dirs[args.dataset]]
+        self.pose_roots = pose_roots
+        self.pose_dir = self.pose_roots[0] if len(self.pose_roots) > 0 else ""
+        self.rgb_dir = rgb_dirs[args.dataset] if args.dataset in rgb_dirs else ""
 
         self.list_data = []  # [(video_id, clip_id), ...]
         self.clip_order_to_int = {}
@@ -800,16 +897,19 @@ class S2T_Dataset_YTASL(Base_Dataset):
             for clip_name in clip_dict['clip_order']:
                 self.list_data.append((video_id, self.clip_order_to_int[video_id][clip_name]))
 
-        available_clip_names = {
-            pathlib.Path(clip).stem  # remove suffix
-            for clip in os.listdir(self.pose_dir)
-            if clip.endswith(".json")
-        }
+        self.annotation_clip_count = len(self.list_data)
+        self.pose_index, self.duplicate_pose_clips, self.root_json_counts = index_pose_jsons(self.pose_roots)
+        available_clip_names = set(self.pose_index.keys())
         video_clips = set()
+        missing_clip_names = []
         for video_id, clip_dict in self.annotation.items():
             for clip_name in clip_dict['clip_order']:
                 if clip_name in available_clip_names:
                     video_clips.add((video_id, self.clip_order_to_int[video_id][clip_name]))
+                else:
+                    missing_clip_names.append(clip_name)
+
+        self.missing_clip_names = missing_clip_names
 
         self.remove_missing_annotation(video_clips)  # Remove data in annotations that are missing in h5 file
 
@@ -863,7 +963,7 @@ class S2T_Dataset_YTASL(Base_Dataset):
         return name_sample, pose_sample, text, gloss, support_rgb_dict
 
     def load_pose(self, clip_name):
-        path = os.path.join(self.pose_dir, f"{clip_name}.json")
+        path = self.pose_index[clip_name]
         pose_data = load_json(path)
         pose = pose_data['cropped_keypoints']
 
@@ -899,15 +999,48 @@ class S2T_Dataset_YTASL(Base_Dataset):
         return len(self.list_data)
 
     def __str__(self):
-        return f'#total {len(self)}'
+        return f'#{self.dataset_name}/{self.phase} total {len(self)}'
+
+    def get_setup_summary(self):
+        return {
+            "name": self.dataset_name,
+            "loader": self.loader,
+            "phase": self.phase,
+            "annotation_path": self.annotation_path,
+            "pose_roots": self.pose_roots,
+            "annotation_clips": self.annotation_clip_count,
+            "usable_clips": len(self),
+            "missing_pose_clips": len(self.missing_clip_names),
+            "missing_pose_examples": self.missing_clip_names[:10],
+            "duplicate_pose_clips": len(self.duplicate_pose_clips),
+            "root_json_counts": self.root_json_counts,
+            "rgb": self.rgb_config,
+        }
 
 
 class S2T_Dataset_Isharah(S2T_Dataset_YTASL):
-    def __init__(self, path, args, phase):
-        super(S2T_Dataset_Isharah, self).__init__(path=path, args=args, phase=phase)
+    def __init__(
+        self,
+        path,
+        args,
+        phase,
+        pose_roots=None,
+        rgb=None,
+        dataset_name=None,
+        loader="isharah_json",
+    ):
+        super(S2T_Dataset_Isharah, self).__init__(
+            path=path,
+            args=args,
+            phase=phase,
+            pose_roots=pose_roots,
+            rgb=rgb,
+            dataset_name=dataset_name,
+            loader=loader,
+        )
 
     def load_pose(self, clip_name):
-        path = os.path.join(self.pose_dir, f"{clip_name}.json")
+        path = self.pose_index[clip_name]
         pose_data = load_json(path)
         pose = pose_data['cropped_keypoints']
 

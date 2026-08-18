@@ -572,6 +572,13 @@ def get_args_parser():
     
     # RGB branch
     parser.add_argument('--rgb_support', action='store_true',)
+
+    # Data config
+    parser.add_argument(
+        "--data_config",
+        default="",
+        help="Path to a JSON data config. When set, dataset paths and target language are loaded from this file.",
+    )
     
     # Pose length
     parser.add_argument("--max_length", default=256, type=int)

@@ -1,9 +1,9 @@
 import torch
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from models import Uni_Sign
 import utils as utils
-from datasets import S2T_Dataset, S2T_Dataset_YTASL, S2T_Dataset_Isharah
+from datasets import Combined_Dataset, S2T_Dataset, S2T_Dataset_YTASL, S2T_Dataset_Isharah
 #S2T_Dataset_YTASL_h5
 import os
 import time
@@ -18,6 +18,16 @@ from models import get_requires_grad_dict
 from SLRT_metrics import translation_performance, islr_performance, wer_list
 from transformers import get_scheduler
 from config import *
+from data_config import (
+    format_data_setup_report,
+    get_required_split_specs,
+    load_data_config,
+    normalize_split_specs,
+    preflight_data_config,
+    spec_name,
+    spec_pose_roots,
+    spec_rgb_config,
+)
 import wandb
 import numpy as np
 
@@ -115,6 +125,168 @@ def make_train_wandb_stats(train_stats):
     return log_stats
 
 
+def apply_data_config_to_args(args, data_config):
+    args.layout = data_config["layout"]
+    args.target_language = data_config["target_language"]
+    if "normalization" in data_config:
+        args.normalization = data_config["normalization"]
+
+    loaders = {
+        spec.get("loader")
+        for split in ("train", "dev", "test")
+        for spec in normalize_split_specs(data_config, split)
+    }
+    if loaders and loaders.issubset({"ytasl_json", "isharah_json"}):
+        # These local JSON loaders use the YTASL graph family in models.py.
+        args.dataset = "YTASL"
+
+    if any(spec_rgb_config(spec) is not None for split in ("train", "dev", "test") for spec in normalize_split_specs(data_config, split)):
+        args.rgb_support = False
+
+
+def build_dataset_from_spec(spec, args, phase):
+    loader = spec.get("loader")
+    dataset_name = spec_name(spec)
+    annotation_path = spec.get("annotation_path")
+    pose_roots = spec_pose_roots(spec)
+    rgb = spec_rgb_config(spec)
+
+    if loader == "ytasl_json":
+        return S2T_Dataset_YTASL(
+            path=annotation_path,
+            args=args,
+            phase=phase,
+            pose_roots=pose_roots,
+            rgb=rgb,
+            dataset_name=dataset_name,
+            loader=loader,
+        )
+    if loader == "isharah_json":
+        return S2T_Dataset_Isharah(
+            path=annotation_path,
+            args=args,
+            phase=phase,
+            pose_roots=pose_roots,
+            rgb=rgb,
+            dataset_name=dataset_name,
+            loader=loader,
+        )
+    raise NotImplementedError(f"Data config loader '{loader}' is not implemented.")
+
+
+def build_split_dataset(specs, args, phase):
+    if len(specs) == 0:
+        return None
+
+    datasets = [build_dataset_from_spec(spec, args, phase) for spec in specs]
+    if len(datasets) == 1:
+        return datasets[0]
+
+    return Combined_Dataset(
+        datasets=datasets,
+        names=[spec_name(spec) for spec in specs],
+        weights=[spec.get("weight", 1.0) for spec in specs],
+        phase=phase,
+    )
+
+
+def get_dataset_setup_summaries(dataset):
+    if dataset is None:
+        return []
+    if hasattr(dataset, "get_setup_summaries"):
+        return dataset.get_setup_summaries()
+    if hasattr(dataset, "get_setup_summary"):
+        return [dataset.get_setup_summary()]
+    return []
+
+
+def make_legacy_dataset(args, phase):
+    if phase == "train":
+        label_paths = train_label_paths
+    elif phase == "dev":
+        label_paths = dev_label_paths
+    elif phase == "test":
+        label_paths = test_label_paths
+    else:
+        raise ValueError(f"Unknown phase: {phase}")
+
+    if args.dataset == "YTASL":
+        return S2T_Dataset_YTASL(path=label_paths[args.dataset], args=args, phase=phase)
+    if args.dataset == "Isharah":
+        return S2T_Dataset_Isharah(path=label_paths[args.dataset], args=args, phase=phase)
+    return S2T_Dataset(path=label_paths[args.dataset], args=args, phase=phase)
+
+
+def build_datasets(args):
+    data_setup_text = None
+    if not args.data_config:
+        if utils.is_main_process():
+            print("WARNING: using legacy --dataset path configuration. Prefer --data_config for new dataset runs.")
+        if args.dataset in ("YTASL", "Isharah") and args.rgb_support:
+            print(f"WARNING: RGB is not implemented for legacy {args.dataset} JSON loading; continuing pose-only.")
+            args.rgb_support = False
+        train_data = make_legacy_dataset(args, "train")
+        dev_data = make_legacy_dataset(args, "dev")
+        test_data = make_legacy_dataset(args, "test")
+        return train_data, dev_data, test_data, data_setup_text
+
+    data_config = load_data_config(args.data_config)
+    apply_data_config_to_args(args, data_config)
+    preflight_report = preflight_data_config(data_config)
+    if preflight_report["errors"]:
+        print(format_data_setup_report(preflight_report))
+        raise FileNotFoundError("Data config contains missing required paths; see setup report above.")
+
+    train_specs = get_required_split_specs(data_config, "train")
+    train_data = build_split_dataset(train_specs, args, "train")
+    dev_data = build_split_dataset(normalize_split_specs(data_config, "dev"), args, "dev")
+    test_data = build_split_dataset(normalize_split_specs(data_config, "test"), args, "test")
+
+    summaries = {
+        "train": get_dataset_setup_summaries(train_data),
+        "dev": get_dataset_setup_summaries(dev_data),
+        "test": get_dataset_setup_summaries(test_data),
+    }
+    data_setup_text = format_data_setup_report(preflight_report, summaries)
+    return train_data, dev_data, test_data, data_setup_text
+
+
+def make_train_sampler(args, train_data):
+    if args.distributed:
+        if hasattr(train_data, "sample_weights"):
+            weights = train_data.sample_weights()
+            if any(weight != 1.0 for weight in weights):
+                print("WARNING: dataset balancing weights are ignored with DistributedSampler.")
+        return torch.utils.data.distributed.DistributedSampler(train_data, shuffle=True)
+
+    if hasattr(train_data, "sample_weights"):
+        weights = train_data.sample_weights()
+        if any(weight != 1.0 for weight in weights):
+            return WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+    return torch.utils.data.RandomSampler(train_data)
+
+
+def make_eval_dataloader(args, dataset, eval_num_workers):
+    if dataset is None:
+        return None
+    if args.distributed:
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset,
+            shuffle=False,
+            drop_last=False
+        )
+    else:
+        sampler = torch.utils.data.SequentialSampler(dataset)
+    return DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        num_workers=eval_num_workers,
+        collate_fn=dataset.collate_fn,
+        sampler=sampler,
+        pin_memory=args.pin_mem,
+    )
+
+
 def main(args):
     utils.init_distributed_mode_ds(args)
 
@@ -129,20 +301,17 @@ def main(args):
 
     print(f"Creating dataset:")
 
-    if args.dataset == "YTASL":
-        train_data = S2T_Dataset_YTASL(path=train_label_paths[args.dataset],
-                                 args=args, phase='train')
-    elif args.dataset == "Isharah":
-        train_data = S2T_Dataset_Isharah(path=train_label_paths[args.dataset],
-                                 args=args, phase='train')
-    else:
-        train_data = S2T_Dataset(path=train_label_paths[args.dataset],
-                                 args=args, phase='train')
+    train_data, dev_data, test_data, data_setup_text = build_datasets(args)
+    if len(train_data) == 0:
+        raise ValueError("Train split has zero usable samples after matching annotations to pose files.")
+    if dev_data is not None and len(dev_data) == 0:
+        print("WARNING: dev split has zero usable samples after matching annotations to pose files; treating it as missing.")
+        dev_data = None
+    if test_data is not None and len(test_data) == 0:
+        print("WARNING: test split has zero usable samples after matching annotations to pose files; treating it as missing.")
+        test_data = None
     print(train_data)
-    if args.distributed:
-        train_sampler = torch.utils.data.distributed.DistributedSampler(train_data, shuffle=True)
-    else:
-        train_sampler = torch.utils.data.RandomSampler(train_data)
+    train_sampler = make_train_sampler(args, train_data)
     train_dataloader = DataLoader(train_data,
                                   batch_size=args.batch_size,
                                   num_workers=args.num_workers,
@@ -185,60 +354,15 @@ def main(args):
 
 
 
-    if args.dataset == "YTASL":
-        dev_data = S2T_Dataset_YTASL(path=dev_label_paths[args.dataset],
-                                 args=args, phase='dev')
-    elif args.dataset == "Isharah":
-        dev_data = S2T_Dataset_Isharah(path=dev_label_paths[args.dataset],
-                                 args=args, phase='dev')
-    else:
-        dev_data = S2T_Dataset(path=dev_label_paths[args.dataset],
-                                 args=args, phase='dev')
-    # dev_data = S2T_Dataset(path=dev_label_paths[args.dataset],
-    #                        args=args, phase='dev')
     print(dev_data)
-    if args.distributed:
-        dev_sampler = torch.utils.data.distributed.DistributedSampler(
-            dev_data,
-            shuffle=False,
-            drop_last=False
-        )
-    else:
-        dev_sampler = torch.utils.data.SequentialSampler(dev_data)
     eval_num_workers = 0 if args.zero_workers_for_eval else args.num_workers
-    dev_dataloader = DataLoader(dev_data,
-                                batch_size=args.batch_size,
-                                num_workers=eval_num_workers,
-                                collate_fn=dev_data.collate_fn,
-                                sampler=dev_sampler,
-                                pin_memory=args.pin_mem)
+    dev_dataloader = make_eval_dataloader(args, dev_data, eval_num_workers)
 
-    if args.dataset == "YTASL":
-        test_data = S2T_Dataset_YTASL(path=test_label_paths[args.dataset],
-                                 args=args, phase='test')
-    elif args.dataset == "Isharah":
-        test_data = S2T_Dataset_Isharah(path=test_label_paths[args.dataset],
-                                 args=args, phase='test')
-    else:
-        test_data = S2T_Dataset(path=test_label_paths[args.dataset],
-                                 args=args, phase='test')
-    # test_data = S2T_Dataset(path=test_label_paths[args.dataset],
-    #                         args=args, phase='test')
     print(test_data)
-    if args.distributed:
-        test_sampler = torch.utils.data.distributed.DistributedSampler(
-            test_data,
-            shuffle=False,
-            drop_last=False
-        )
-    else:
-        test_sampler = torch.utils.data.SequentialSampler(test_data)
-    test_dataloader = DataLoader(test_data,
-                                 batch_size=args.batch_size,
-                                 num_workers=eval_num_workers,
-                                 collate_fn=test_data.collate_fn,
-                                 sampler=test_sampler,
-                                 pin_memory=args.pin_mem)
+    test_dataloader = make_eval_dataloader(args, test_data, eval_num_workers)
+
+    if not args.eval and dev_dataloader is None:
+        raise ValueError("Training requires a dev split for checkpoint selection; data config 'dev' is null/missing.")
 
     print(f"Creating model:")
     model = Uni_Sign(
@@ -380,16 +504,29 @@ def main(args):
         wandb.define_metric("train/micro_step")
         wandb.define_metric("train/*", step_metric="train/optimizer_step")
         wandb.define_metric("dev/*", step_metric="train/optimizer_step")
+        wandb.define_metric("test/*", step_metric="train/optimizer_step")
+
+    if data_setup_text and utils.is_main_process():
+        print(data_setup_text)
+        if args.wandb and wandb.run:
+            wandb.config.update({"data_setup": data_setup_text}, allow_val_change=True)
 
     if args.eval:
+        if dev_dataloader is None and test_dataloader is None:
+            raise ValueError("Eval requested, but both dev and test splits are null/missing.")
         # Run eval on all ranks to keep DeepSpeed/NCCL collectives aligned.
-        if args.task != "ISLR":
+        if args.task != "ISLR" and dev_dataloader is not None:
             if utils.is_main_process():
                 print("📄 dev result")
             evaluate(args, dev_dataloader, model, model_without_ddp, phase='dev')
-        if utils.is_main_process():
-            print("📄 test result")
-        evaluate(args, test_dataloader, model, model_without_ddp, phase='test')
+        elif args.task != "ISLR" and utils.is_main_process():
+            print("WARNING: dev split is null/missing; skipping dev evaluation.")
+        if test_dataloader is not None:
+            if utils.is_main_process():
+                print("📄 test result")
+            evaluate(args, test_dataloader, model, model_without_ddp, phase='test')
+        elif utils.is_main_process():
+            print("WARNING: test split is null/missing; skipping test evaluation.")
 
         return
     print(f"Start training for {args.epochs} epochs")

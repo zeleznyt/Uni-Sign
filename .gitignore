@@ -12,6 +12,8 @@ backup
 out/
 log/
 *.json
+!configs/
+!configs/*.json
 *.xlsx
 *.mp4
 tools/*.jpg

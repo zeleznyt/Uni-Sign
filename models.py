@@ -102,7 +102,9 @@ class Uni_Sign(nn.Module):
 
         self.apply(self._init_weights)
         
-        if self.args.dataset == "Isharah":
+        if getattr(self.args, "target_language", None):
+            self.lang = self.args.target_language
+        elif self.args.dataset == "Isharah":
             self.lang = 'Arabic'
         elif "CSL" in self.args.dataset:
             self.lang = 'Chinese'
