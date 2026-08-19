@@ -63,6 +63,8 @@ deepspeed --include localhost:0 fine_tuning.py \
 
 For multiple GPUs, list them in the launcher, for example `--include localhost:0,1,2,3`. Add `--finetune PATH` to initialize model weights from a `.pth` file or DeepSpeed checkpoint directory. Use `--resume PATH` to restore the complete DeepSpeed training state instead.
 
+The mT5 model and tokenizer are loaded from `./pretrained_weight/mt5-base` by default. Use `--mt5_path PATH_OR_MODEL_ID` to select another local directory or Hugging Face model identifier.
+
 Evaluation-only run:
 
 ```bash

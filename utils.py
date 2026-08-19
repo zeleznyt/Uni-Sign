@@ -576,6 +576,11 @@ def get_args_parser():
         required=True,
         help="Path to the JSON data config used for all dataset, graph, layout, and target-language settings.",
     )
+    parser.add_argument(
+        "--mt5_path",
+        default="./pretrained_weight/mt5-base",
+        help="Path or Hugging Face model identifier used to load the mT5 model and tokenizer.",
+    )
     
     # Pose length
     parser.add_argument("--max_length", default=256, type=int)
