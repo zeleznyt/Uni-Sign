@@ -434,12 +434,25 @@ def get_train_ds_config(offload,
         },
     }
 
+def _resolve_deepspeed_zero_stage(args, optimizer):
+    if getattr(args, "eval", False) and optimizer is None:
+        return 0
+    return args.zero_stage
+
+
 def init_deepspeed(args, model, optimizer, lr_scheduler):
+
+    effective_zero_stage = _resolve_deepspeed_zero_stage(args, optimizer)
+    if effective_zero_stage != args.zero_stage and is_main_process():
+        print(
+            f"Evaluation has no optimizer; disabling ZeRO stage {args.zero_stage} "
+            "and initializing DeepSpeed with stage 0."
+        )
 
     ds_config = get_train_ds_config(
         offload=args.offload,
         dtype=args.dtype,
-        stage=args.zero_stage,
+        stage=effective_zero_stage,
         args=args
     )
 
@@ -558,7 +571,7 @@ def get_args_parser():
     parser.add_argument('--zero_stage',
                         type=int,
                         default=2,
-                        help='ZeRO optimization stage for Actor model (and clones).')
+                        help='ZeRO optimization stage for training. Evaluation without an optimizer uses stage 0.')
     ## low precision
     parser.add_argument('--compute_fp32_loss',
                         action='store_true',
